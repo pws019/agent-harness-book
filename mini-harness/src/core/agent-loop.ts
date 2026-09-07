@@ -103,14 +103,22 @@ export async function* runTurn(
     yield { type: 'model-response', message: result.message, finish: result.finish, attempts: result.attempts }
     history.push(result.message)
 
+    // Cancellation can surface two ways from generateWithRetry: as finish.kind === 'aborted'
+    // (the signal was already aborted before dispatch, handled entirely inside Day3's retry
+    // loop), or as an adapter throwing mid-stream once it notices the signal fire -- which our
+    // error-classification path turns into finish.kind === 'error' with code 'ABORTED'. Both
+    // must map to the same StopReason; treating only the first as cancellation was a real gap
+    // we found while building Day6 (see study.md §"坑三").
+    const isCancellation =
+      result.finish.kind === 'aborted' || (result.finish.kind === 'error' && result.finish.failure.code === 'ABORTED')
+    if (isCancellation) {
+      yield { type: 'turn-end', stopReason: { kind: 'cancelled' } }
+      return { kind: 'cancelled' }
+    }
     if (result.finish.kind === 'error') {
       const stopReason: StopReason = { kind: 'error', failure: result.finish.failure }
       yield { type: 'turn-end', stopReason }
       return stopReason
-    }
-    if (result.finish.kind === 'aborted') {
-      yield { type: 'turn-end', stopReason: { kind: 'cancelled' } }
-      return { kind: 'cancelled' }
     }
 
     const toolCalls = result.message.blocks.filter((block): block is ToolCallBlock => block.type === 'tool-call')

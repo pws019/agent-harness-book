@@ -73,6 +73,12 @@ export class AdapterRegistry {
 /**
  * 深冻结一个请求对象。冻结之后任何修改都会在严格模式下抛 TypeError，
  * 保证"发出去的请求"和"日志里记录的请求"永远是同一个不可变快照。
+ *
+ * 只递归冻结"纯数据"（普通 object 字面量和数组），刻意跳过其它一切——最重要的是
+ * `AbortSignal` 这类平台对象：它们要靠内部可写状态才能真正被 abort()，Day6 写取消
+ * 逻辑时曾经因为这里递归冻结了 `options.signal`，导致 `controller.abort()` 在底层
+ * 尝试写入内部字段时直接抛错（"Cannot assign to read only property"）。冻结请求的
+ * 意图是保证"发给模型的数据"不可变，不是把请求里引用到的每一个对象都变成死物。
  */
 export function freezeRequest<T>(request: T): Readonly<T> {
   deepFreeze(request)
@@ -82,6 +88,9 @@ export function freezeRequest<T>(request: T): Readonly<T> {
 function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== 'object') return
   if (Object.isFrozen(value)) return
+  const proto = Object.getPrototypeOf(value)
+  const isPlainData = proto === Object.prototype || proto === null || Array.isArray(value)
+  if (!isPlainData) return // 跳过 AbortSignal、class 实例等"活的"平台对象
   Object.freeze(value)
   for (const key of Object.getOwnPropertyNames(value)) {
     deepFreeze((value as Record<string, unknown>)[key])

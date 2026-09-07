@@ -1,0 +1,202 @@
+import { describe, expect, it } from 'vitest'
+import { Agent, type AgentCancelCause } from '../src/core/agent-handle.js'
+import { LlmAdapter, LlmError, type GenerateOptions } from '../src/llm/adapter.js'
+import { streamFake } from '../src/llm/fake-adapter.js'
+import type { Message, StreamChunk } from '../src/llm/types.js'
+import { ToolRegistry } from '../src/tools/registry.js'
+
+function userText(text: string): Message {
+  return { role: 'user', blocks: [{ type: 'text', text }] }
+}
+
+function assistantText(text: string): Message {
+  return { role: 'assistant', blocks: [{ type: 'text', text }] }
+}
+
+/** Resolves instantly with a fixed text answer. Good for "happy path drains and goes idle" tests. */
+class InstantAdapter extends LlmAdapter {
+  callCount = 0
+  async *stream(): AsyncIterable<StreamChunk> {
+    this.callCount += 1
+    yield* streamFake({ message: assistantText('ok'), finishReason: { kind: 'stop' } })
+  }
+}
+
+/**
+ * Stays genuinely suspended mid-request until you call `open()`, or reacts immediately to the
+ * request's AbortSignal by throwing. `started` resolves the instant the generator body reaches
+ * its blocking await, so tests can `await adapter.started` instead of guessing how many
+ * microtask ticks it takes to get there through drain() -> runTurn() -> generateWithRetry().
+ */
+class GatedAdapter extends LlmAdapter {
+  private release: (() => void) | undefined
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve
+  })
+  private startedResolve: (() => void) | undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.startedResolve = resolve
+  })
+  callCount = 0
+
+  open(): void {
+    this.release?.()
+  }
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.callCount += 1
+    this.startedResolve?.()
+    await new Promise<void>((resolve, reject) => {
+      this.gate.then(resolve)
+      options.signal?.addEventListener(
+        'abort',
+        () => reject(new LlmError({ code: 'ABORTED', message: 'aborted mid-flight' })),
+        { once: true },
+      )
+    })
+    yield* streamFake({ message: assistantText('too late'), finishReason: { kind: 'stop' } })
+  }
+}
+
+function newAgent(adapter: LlmAdapter): Agent {
+  return new Agent({ adapter, tools: new ToolRegistry(), provider: 'fake', model: 'x' })
+}
+
+describe('Agent: basic lifecycle', () => {
+  it('goes idle -> running -> idle for a single message', async () => {
+    const agent = newAgent(new InstantAdapter())
+    expect(agent.status).toBe('idle')
+    agent.send(userText('hi'))
+    await agent.whenIdle()
+    expect(agent.status).toBe('idle')
+    expect(agent.records).toHaveLength(1)
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'completed' })
+  })
+
+  it('queues messages sent while already running, and processes all of them in order', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('first'))
+    await adapter.started
+    expect(agent.status).toBe('running')
+    agent.send(userText('second')) // queued: drain() is still inside the first turn
+    adapter.open() // release the gate -- first turn can now finish, then second turn will run
+    await agent.whenIdle()
+
+    expect(agent.records).toHaveLength(2)
+    expect(agent.records[0]!.userMessage).toEqual(userText('first'))
+    expect(agent.records[1]!.userMessage).toEqual(userText('second'))
+    expect(agent.records.every((r) => r.stopReason.kind === 'completed')).toBe(true)
+  })
+
+  it('whenIdle does not resolve until ALL queued turns (including ones sent mid-drain) are done', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('first'))
+    await adapter.started
+    agent.send(userText('second'))
+
+    let resolved = false
+    const idlePromise = agent.whenIdle().then(() => {
+      resolved = true
+    })
+    adapter.open()
+    await idlePromise
+    expect(resolved).toBe(true)
+    expect(agent.records).toHaveLength(2)
+  })
+})
+
+describe('Agent: cancellation', () => {
+  it('cancel() aborts a turn that is genuinely mid-flight and records the cause', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('hi'))
+    await adapter.started
+    expect(agent.status).toBe('running')
+
+    const cause: AgentCancelCause = { kind: 'user' }
+    agent.cancel(cause)
+    await agent.whenIdle()
+
+    expect(agent.records).toHaveLength(1)
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
+    expect(agent.records[0]!.cancelCause).toEqual(cause)
+  })
+
+  it('cancel() clears queued messages by default', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('first'))
+    await adapter.started
+    agent.send(userText('second'))
+    agent.cancel({ kind: 'user' })
+    await agent.whenIdle()
+
+    // Only the in-flight turn produces a record; "second" never got a chance to run.
+    expect(agent.records).toHaveLength(1)
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
+  })
+
+  it('cancel() with keepInbox:true leaves queued messages to run afterward', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('first'))
+    await adapter.started
+    agent.send(userText('second'))
+    agent.cancel({ kind: 'user' }, { keepInbox: true })
+    // The gate is shared by the adapter instance across calls: "first" was aborted without
+    // ever needing it opened, but "second" will make its own stream() call against the same
+    // never-yet-released gate, so it must be opened for the second turn to complete.
+    adapter.open()
+    await agent.whenIdle()
+
+    // "first" was cancelled, but "second" was kept in the inbox and should have run to
+    // completion against a fresh (non-aborted) controller once drain moved on to it.
+    expect(agent.records).toHaveLength(2)
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
+    expect(agent.records[1]!.stopReason).toEqual({ kind: 'completed' })
+  })
+})
+
+describe('Agent: dispose', () => {
+  it('is idempotent and blocks further send() calls', async () => {
+    const agent = newAgent(new InstantAdapter())
+    await agent.dispose()
+    await expect(agent.dispose()).resolves.toBeUndefined() // second call: no-op, does not throw
+    expect(() => agent.send(userText('too late'))).toThrow()
+  })
+
+  it('waits for an in-flight turn to finish draining before resolving', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('hi'))
+    await adapter.started
+
+    // dispose() cancels the turn, which rejects the adapter's gated promise immediately (no
+    // need to call open()) -- but dispose() must still wait for drain()'s await chain to
+    // actually settle and record the outcome before its own promise resolves.
+    await agent.dispose()
+    expect(agent.records).toHaveLength(1)
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
+    expect(agent.status).toBe('idle')
+  })
+})
+
+describe('Agent: repeated cancel/send races produce no dangling state', () => {
+  it('runs 100 rounds of racing cancel() against send() without duplicate or missing terminal records', async () => {
+    for (let i = 0; i < 100; i++) {
+      const adapter = new InstantAdapter()
+      const agent = newAgent(adapter)
+      agent.send(userText(`race-${i}`))
+      // Fire cancel() without waiting -- sometimes it lands before the turn starts, sometimes
+      // after it has already completed (InstantAdapter resolves fast). Either way the agent
+      // must end up idle with a consistent, single-record-per-turn history.
+      agent.cancel({ kind: 'user' })
+      await agent.whenIdle()
+      expect(agent.status).toBe('idle')
+      expect(agent.records.length).toBeLessThanOrEqual(1)
+      await agent.dispose()
+    }
+  })
+})

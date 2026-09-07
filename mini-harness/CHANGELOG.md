@@ -36,3 +36,13 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `src/core/agent-loop.ts` —— `runTurn()`：turn/step 骨架，事件流（`turn-start`/`step-start`/`model-response`/`tool-call`/`tool-result`/`step-end`/`turn-end`），四态终止（`completed`/`cancelled`/`budget_exhausted`/`error`），工具失败转译为 `isError` 结果而不是让异常冒泡。
 - `tests/agent-loop.test.ts`（8 条）—— 单步完成、工具调用往返、未知工具/非法 JSON 参数的故障注入、`max_steps`/`max_tool_calls` 预算耗尽、取消短路、终态事件与返回值一致性。
 - **修了一个真实 bug**：`generateWithRetry` 的深度冻结会把 `messages: history` 这个可变数组本身冻住，导致 `history.push()` 抛异常——改传快照 `[...history]` 修复，细节见 `modules/day05-agent-loop/study.md` 第4节。
+
+## Day6：生命周期、取消与并发
+
+新增：
+- `src/core/agent-handle.ts` —— `Agent` 类：`send()`（inbox 排队）、`cancel(cause, {keepInbox?})`（类型化取消原因、默认清空排队消息）、`dispose()`（幂等）、`whenIdle()`、单 writer 的 `drain()` 循环、`TurnRecord` 历史。
+- `tests/agent-handle.test.ts`（9 条）—— 基本生命周期、排队处理、`whenIdle()` 语义、取消（含 `keepInbox`）、幂等释放、100 轮 cancel/send 竞态测试。
+
+修了两个真实 bug：
+- `agent-loop.ts`：`generateWithRetry` 通过异常路径传出的 `ABORTED` 失败被归类成了 `finish.kind === 'error'` 而不是 `'aborted'`，导致取消有时会被误判为普通错误。统一判定逻辑同时检查两种路径。
+- `llm/adapter.ts`（Day3 埋下的雷）：`freezeRequest()` 的深冻结把 `options.signal` 指向的 `AbortSignal` 本身也递归冻结了，导致 `controller.abort()` 直接抛异常。改为只递归冻结纯数据（普通对象/数组），跳过 `AbortSignal` 等"活的"平台对象。
