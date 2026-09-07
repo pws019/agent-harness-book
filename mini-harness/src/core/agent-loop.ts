@@ -1,0 +1,173 @@
+import { generateWithRetry, type GenerateRuntime, type LlmAdapter, type RetryPolicy } from '../llm/adapter.js'
+import type { FinishReason, LlmFailure, Message, ToolCallBlock, ToolResultBlock } from '../llm/types.js'
+import type { ToolRegistry } from '../tools/registry.js'
+
+/**
+ * 系统对"这一轮是否真的完成了"的判断结果，绝不是"模型自己说完成了"。
+ * 具体规则见下方 runTurn 的实现和 study.md 第2节。
+ */
+export type StopReason =
+  | { readonly kind: 'completed' }
+  | { readonly kind: 'cancelled' }
+  | { readonly kind: 'budget_exhausted'; readonly reason: 'max_steps' | 'max_tool_calls' | 'deadline' }
+  | { readonly kind: 'error'; readonly failure: LlmFailure }
+
+export type AgentLoopEvent =
+  | { readonly type: 'turn-start' }
+  | { readonly type: 'step-start'; readonly step: number }
+  | { readonly type: 'model-response'; readonly message: Message; readonly finish: FinishReason; readonly attempts: number }
+  | { readonly type: 'tool-call'; readonly toolCall: ToolCallBlock }
+  | { readonly type: 'tool-result'; readonly toolCallId: string; readonly content: string; readonly isError: boolean }
+  | { readonly type: 'step-end'; readonly step: number }
+  | { readonly type: 'turn-end'; readonly stopReason: StopReason }
+
+export interface AgentLoopOptions {
+  readonly maxSteps?: number
+  readonly maxToolCalls?: number
+  readonly deadlineMs?: number
+  readonly signal?: AbortSignal
+  readonly retryPolicy?: RetryPolicy
+  readonly retryRuntime?: GenerateRuntime
+}
+
+export interface AgentLoopDeps {
+  readonly adapter: LlmAdapter
+  readonly tools: ToolRegistry
+  readonly provider: string
+  readonly model: string
+  readonly system?: string
+}
+
+const DEFAULT_MAX_STEPS = 20
+const DEFAULT_MAX_TOOL_CALLS = 50
+
+/**
+ * 一个 turn 的骨架：请求模型 -> 执行工具 -> 把结果回填进历史 -> 继续请求，
+ * 直到系统确认"不再欠下任何工作"或撞到某个预算上限。
+ *
+ * `history` 是调用方传入、原地追加的数组——这是我们在 Day8 引入事件日志之前，
+ * "会话状态"的最简替身。Day8 起，历史会从仅追加事件日志派生，而不是像这样
+ * 直接维护一个可变数组。
+ *
+ * 返回值（generator 的 return，不是某个 yield）就是这个 turn 的最终 StopReason。
+ */
+export async function* runTurn(
+  history: Message[],
+  deps: AgentLoopDeps,
+  options: AgentLoopOptions = {},
+): AsyncGenerator<AgentLoopEvent, StopReason> {
+  const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS
+  const maxToolCalls = options.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS
+  const deadline = options.deadlineMs !== undefined ? Date.now() + options.deadlineMs : undefined
+  let toolCallCount = 0
+  let step = 0
+
+  yield { type: 'turn-start' }
+
+  for (;;) {
+    if (options.signal?.aborted) {
+      yield { type: 'turn-end', stopReason: { kind: 'cancelled' } }
+      return { kind: 'cancelled' }
+    }
+    if (deadline !== undefined && Date.now() > deadline) {
+      const stopReason: StopReason = { kind: 'budget_exhausted', reason: 'deadline' }
+      yield { type: 'turn-end', stopReason }
+      return stopReason
+    }
+
+    step += 1
+    if (step > maxSteps) {
+      const stopReason: StopReason = { kind: 'budget_exhausted', reason: 'max_steps' }
+      yield { type: 'turn-end', stopReason }
+      return stopReason
+    }
+
+    yield { type: 'step-start', step }
+
+    const result = await generateWithRetry(
+      deps.adapter,
+      {
+        provider: deps.provider,
+        model: deps.model,
+        system: deps.system,
+        // A snapshot, not `history` itself: generateWithRetry deep-freezes the request it's
+        // given (Day3), and `history` is the mutable array we keep appending to below. Handing
+        // over the live array would freeze it in place and this loop could never push again.
+        messages: [...history],
+        signal: options.signal,
+      },
+      options.retryPolicy,
+      options.retryRuntime,
+    )
+
+    yield { type: 'model-response', message: result.message, finish: result.finish, attempts: result.attempts }
+    history.push(result.message)
+
+    if (result.finish.kind === 'error') {
+      const stopReason: StopReason = { kind: 'error', failure: result.finish.failure }
+      yield { type: 'turn-end', stopReason }
+      return stopReason
+    }
+    if (result.finish.kind === 'aborted') {
+      yield { type: 'turn-end', stopReason: { kind: 'cancelled' } }
+      return { kind: 'cancelled' }
+    }
+
+    const toolCalls = result.message.blocks.filter((block): block is ToolCallBlock => block.type === 'tool-call')
+
+    // 系统确认完成的条件：模型这一步没有欠下任何工具调用，而不是"模型嘴上说完了"。
+    // finish.kind === 'tool-calls' 但消息里实际没有 tool-call 块，属于畸形响应，
+    // 我们保守地当成"还没完成"处理，继续下一步而不是武断收尾。
+    if (toolCalls.length === 0 && result.finish.kind !== 'tool-calls') {
+      yield { type: 'step-end', step }
+      yield { type: 'turn-end', stopReason: { kind: 'completed' } }
+      return { kind: 'completed' }
+    }
+
+    const toolResults: ToolResultBlock[] = []
+    for (const call of toolCalls) {
+      toolCallCount += 1
+      if (toolCallCount > maxToolCalls) {
+        const stopReason: StopReason = { kind: 'budget_exhausted', reason: 'max_tool_calls' }
+        yield { type: 'turn-end', stopReason }
+        return stopReason
+      }
+
+      yield { type: 'tool-call', toolCall: call }
+      const { content, isError } = await executeToolCall(deps.tools, call, options.signal)
+      toolResults.push({ type: 'tool-result', toolCallId: call.id, content, isError })
+      yield { type: 'tool-result', toolCallId: call.id, content, isError }
+    }
+
+    if (toolResults.length > 0) {
+      history.push({ role: 'tool', blocks: toolResults })
+    }
+
+    yield { type: 'step-end', step }
+  }
+}
+
+/**
+ * 执行一次工具调用，把"工具执行本身抛出的任何错误"翻译成一条 isError 工具结果，
+ * 而不是让整个 turn 崩溃。覆盖的故障场景（对应 study.md 故障注入清单）：
+ * 调用不存在的工具、参数不是合法 JSON、工具执行超时/被取消、工具内部抛出业务错误。
+ */
+async function executeToolCall(
+  tools: ToolRegistry,
+  call: ToolCallBlock,
+  signal: AbortSignal | undefined,
+): Promise<{ content: string; isError: boolean }> {
+  let args: unknown
+  try {
+    args = JSON.parse(call.arguments)
+  } catch {
+    return { content: `invalid JSON arguments for tool "${call.name}": ${call.arguments}`, isError: true }
+  }
+
+  try {
+    const result = await tools.execute(call.name, args, { signal: signal ?? new AbortController().signal, cwd: '.' })
+    return { content: result.content, isError: false }
+  } catch (error) {
+    return { content: error instanceof Error ? error.message : String(error), isError: true }
+  }
+}

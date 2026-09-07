@@ -29,3 +29,10 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `src/tools/workspace.ts` —— `resolveWithinRoot()`：字符串层面的路径越界防护（symlink 逃逸留给 Day15）。
 - `src/tools/fs-tools.ts` —— 三个只读深工具：`read_file`/`list_files`/`search_text`，均带输出上限保护（截断+报告总数，不静默丢弃）。
 - `tests/tools.test.ts`（19 条）+ `tests/fixtures/workspace/` —— 覆盖 schema 不泄漏实现细节、路径越界、参数校验、超时、取消时机等坏路径。
+
+## Day5：Agent Loop
+
+新增：
+- `src/core/agent-loop.ts` —— `runTurn()`：turn/step 骨架，事件流（`turn-start`/`step-start`/`model-response`/`tool-call`/`tool-result`/`step-end`/`turn-end`），四态终止（`completed`/`cancelled`/`budget_exhausted`/`error`），工具失败转译为 `isError` 结果而不是让异常冒泡。
+- `tests/agent-loop.test.ts`（8 条）—— 单步完成、工具调用往返、未知工具/非法 JSON 参数的故障注入、`max_steps`/`max_tool_calls` 预算耗尽、取消短路、终态事件与返回值一致性。
+- **修了一个真实 bug**：`generateWithRetry` 的深度冻结会把 `messages: history` 这个可变数组本身冻住，导致 `history.push()` 抛异常——改传快照 `[...history]` 修复，细节见 `modules/day05-agent-loop/study.md` 第4节。
