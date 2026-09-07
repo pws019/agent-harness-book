@@ -46,3 +46,12 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 修了两个真实 bug：
 - `agent-loop.ts`：`generateWithRetry` 通过异常路径传出的 `ABORTED` 失败被归类成了 `finish.kind === 'error'` 而不是 `'aborted'`，导致取消有时会被误判为普通错误。统一判定逻辑同时检查两种路径。
 - `llm/adapter.ts`（Day3 埋下的雷）：`freezeRequest()` 的深冻结把 `options.signal` 指向的 `AbortSignal` 本身也递归冻结了，导致 `controller.abort()` 直接抛异常。改为只递归冻结纯数据（普通对象/数组），跳过 `AbortSignal` 等"活的"平台对象。
+
+## Day7：里程碑一——可测试的单 Agent CLI
+
+新增：
+- `src/heuristic-adapter.ts` —— `HeuristicInvestigationAdapter`：不连真实模型的演示适配器，按固定策略调用 `list_files` → `search_text`，根据真实工具结果组织带证据的总结；接入真实模型只需另写一个实现 `LlmAdapter` 的类，`Agent`/`runTurn` 不用改。
+- `src/cli.ts` —— `parseArgs()`/`runInvestigation()`/`main()`：把 Day1-6 的每一层（Agent → runTurn → generateWithRetry → ToolRegistry → 三个只读工具）接成一个可以 `pnpm cli` 直接跑的命令行调查工具。
+- `tests/scenarios.test.ts`（20 条）—— 阶段一毕业验收：成功、证据不足、工具失败（未知工具/非法参数/文件不存在/路径越界）、预算耗尽、取消（含 dispose）、模型层错误重试/耗尽/不可重试、跨天回归守卫（Day5 冻结 bug、重复工具调用不误去重）。
+
+至此 `pnpm test` 共 181 条测试全绿，`pnpm typecheck` 无错误。
