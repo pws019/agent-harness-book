@@ -1,0 +1,19 @@
+{
+  "name": "mini-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "跟随《30天进阶学习计划》逐天演进的最小 Agent Harness 教学工程",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
