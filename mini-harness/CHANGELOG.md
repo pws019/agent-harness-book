@@ -19,3 +19,13 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 新增：
 - `src/llm/adapter.ts` —— `LlmAdapter` 抽象类、`AdapterRegistry`（原子注册/幂等 dispose）、`LlmError`、`freezeRequest()`（深冻结请求）、`classifyFinish()`（空 completion → 可重试错误）、`RetryPolicy`/`generateWithRetry()`（指数退避、取消永不重试、"一次适配器调用=一次 provider attempt"）。
 - `tests/adapter.test.ts` —— 14 条测试：注册表原子性/幂等、重试成功/耗尽/白名单外不重试、取消短路、请求冻结、退避延迟增长曲线。
+
+## Day4：工具设计与执行管线
+
+新增：
+- `src/tools/types.ts` —— `JsonSchema`、`ToolDefinition`、`ToolResult`、分类错误（`ToolArgsError`/`ToolOutputError`/`ToolNotFoundError`/`ToolTimeoutError`/`ToolAbortedError`/`ToolExecutionError`）。
+- `src/tools/schema-validate.ts` —— 极简 JSON Schema 校验器 + `assertExplicitAdditionalProperties()`（定义期强制工具作者声明未知参数策略）。
+- `src/tools/registry.ts` —— `ToolRegistry`：统一的参数校验 → 取消检查 → 超时/取消赛跑 → 执行 → 结果渲染管线。**修了一个真实 bug**：取消检查必须在调用 `tool.execute()` 之前，而不是把已创建的 Promise 传进去再检查（调用 async 函数会同步跑到第一个 await）。
+- `src/tools/workspace.ts` —— `resolveWithinRoot()`：字符串层面的路径越界防护（symlink 逃逸留给 Day15）。
+- `src/tools/fs-tools.ts` —— 三个只读深工具：`read_file`/`list_files`/`search_text`，均带输出上限保护（截断+报告总数，不静默丢弃）。
+- `tests/tools.test.ts`（19 条）+ `tests/fixtures/workspace/` —— 覆盖 schema 不泄漏实现细节、路径越界、参数校验、超时、取消时机等坏路径。
