@@ -21,7 +21,7 @@ agent-study/
     └── CHANGELOG.md         # 逐天记录新增/修改了什么、修了什么 bug
 ```
 
-**推荐阅读顺序**：打开 `modules/day01-.../README.md`，跟着往下走。每天：先读 `study.md` 建立心智模型 → 看 `mini-harness/` 里对应的代码 → 做 `exercise.md` 的练习 → 跑 `pnpm test` 验证。
+**推荐阅读顺序**：先扫一眼 [modules/day00-phase1-overview/](modules/day00-phase1-overview/)（阶段一全貌地图，不含练习，现在看不懂大部分术语是正常的），再打开 `modules/day01-.../README.md` 跟着往下走。每天：先读 `study.md` 建立心智模型 → 看 `mini-harness/` 里对应的代码 → 做 `exercise.md` 的练习 → 跑 `pnpm test` 验证。学到中途觉得"看细节看到出不来"的时候，随时回 Day0 那张地图对一遍——这正是它存在的目的。
 
 **代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day07`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
 
@@ -29,6 +29,7 @@ agent-study/
 
 | 天 | 主题 | 目录 |
 |---|---|---|
+| 0 | 阶段一全貌地图（不含练习，学完 Day1-7 回来对照用） | [modules/day00-phase1-overview/](modules/day00-phase1-overview/) |
 | 1 | Agent / Workflow / Harness 的边界，设计两次 | [modules/day01-agent-vs-workflow/](modules/day01-agent-vs-workflow/) |
 | 2 | LLM 消息模型与流式协议 | [modules/day02-llm-message-and-streaming/](modules/day02-llm-message-and-streaming/) |
 | 3 | Adapter 边界与请求信封 | [modules/day03-adapter-boundary/](modules/day03-adapter-boundary/) |
