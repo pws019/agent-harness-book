@@ -241,10 +241,14 @@ export function createSearchTextTool(root: string): ToolDefinition<SearchTextVal
         let content: string
         try {
           const buffer = await readFile(absolutePath)
+          // 已知缺口：跟下面 matches/totalMatches 的截断不一样，这里跳过文件是完全静默的——
+          // totalMatches 根本不知道这个文件里本来有多少匹配，调用方也没法区分"真的没匹配"
+          // 和"这个文件被跳过了，可能有匹配"。要修的话得给 SearchTextValue 加一个
+          // skippedFiles 计数，并在 render() 里透出，目前还没做。
           if (buffer.byteLength > MAX_SEARCH_FILE_BYTES) continue // skip oversized/binary-ish files
           content = buffer.toString('utf8')
         } catch {
-          continue
+          continue // 读取失败（权限问题、编码错误等）——跟上面同样的静默跳过缺口
         }
         const lines = content.split('\n')
         for (let i = 0; i < lines.length; i++) {

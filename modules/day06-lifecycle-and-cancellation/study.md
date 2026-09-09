@@ -2,6 +2,20 @@
 
 > 素材来源：DSH `docs/subsystems/core.zh.md`（AgentHandle/Agent/Scope 部分）、`docs/subsystems/invariants.zh.md`、`docs/subsystems/scope.zh.md`。
 
+## 0. 前置知识：`AbortController`/`AbortSignal` 和"单 writer 队列"
+
+**`AbortController`**：你在前端可能已经用 `fetch(url, { signal })` 取消过请求，今天要用同一套浏览器/Node 标准 API，只是用途从"取消一次 HTTP 请求"扩展成"取消一整个 Agent turn"。用法就三步：
+
+```ts
+const controller = new AbortController()   // 1. 创建一个控制器
+doSomething({ signal: controller.signal }) // 2. 把它的 signal 传给会跑很久的操作，操作内部随时检查 signal.aborted
+controller.abort(reason)                   // 3. 想取消时调用 abort()，signal.aborted 变 true，reason 会存进 signal.reason
+```
+
+`controller` 和 `signal` 是一对：`controller` 是"遥控器"，只有拿到它的人能按下"取消"；`signal` 是"信号灯"，传给任何需要响应取消的代码，那部分代码只能**读**（`signal.aborted`/`signal.reason`），不能自己触发取消。这也是为什么 Day3 的深冻结把 `signal` 也递归冻死了会直接炸——`controller.abort()` 需要在底层**修改** `signal` 的内部状态，一个被冻住的对象没法被修改。
+
+**单 writer 队列**：如果你写过前端状态管理（Redux/Vuex 这类），可以类比成"所有 action 必须经过唯一的 dispatch 入口，排队依次处理，不会有两个 reducer 同时改同一份 state"。这里的 `Agent.send()` 把新消息塞进 `inbox` 数组排队，真正处理消息的 `drain()` 循环一次只从队列头部取一条处理，处理完才取下一条——保证任何时刻只有"一个 turn 在跑"，不会有两次 `runTurn()` 并发修改同一份 `history`。这是解决"并发写同一份共享状态"这个经典问题最简单的手段：不并发，排队。
+
 ## 1. Agent 句柄与所有权：类比"借书证"
 
 ```ts
@@ -16,6 +30,33 @@ interface AgentHandle {
 **类比**：图书馆（registry）里所有书都能查到（对应 `ctx.agents.get(id)` 返回裸的 `Agent`），但只有借书证持有人（handle 持有者）能"还书"（dispose）。
 
 **我们 MiniHarness 的简化**：DSH 有"运行时所有权"（谁的 scope 创建了它）和"结构性所有权"（注册它的 factory provider）两层所有权模型，我们today只做一层——`Agent` 类本身直接暴露 `dispose()`，谁拿到这个实例谁负责释放。这是刻意的简化，不是偷懒：我们的 MiniHarness 目前只有一个主 Agent，没有 DSH 那种"父 agent 创建子 agent、工厂 provider 可以被卸载"的场景（那是 Day26 Subagent 才会引入的复杂度），提前做两层所有权只会增加不必要的认知负担。
+
+在往下讲之前，先看一眼今天的主角 `Agent` 类长什么样（对照 `mini-harness/src/core/agent-handle.ts`，下面是裁剪过的版本，只留下这篇文档会提到的成员）：
+
+```ts
+export type AgentCancelCause =
+  | { readonly kind: 'user' }
+  | { readonly kind: 'parent' }
+  | { readonly kind: 'hook'; readonly reason: string }
+  | { readonly kind: 'disposed' }
+
+export interface TurnRecord {
+  readonly userMessage: Message
+  readonly stopReason: StopReason
+  readonly cancelCause?: AgentCancelCause   // 这次 turn 是不是因为取消而结束、原因是什么
+}
+
+export class Agent {
+  readonly history: Message[] = []          // 完整对话历史
+  readonly records: TurnRecord[] = []       // 每条 turn 处理完，追加一条记录
+
+  send(message: Message): void              // 排队一条新消息（inbox），不打断正在跑的 turn
+  cancel(cause: AgentCancelCause): void      // 取消当前正在跑的 turn
+  async whenIdle(): Promise<void>            // 等到 inbox 清空、没有活在跑
+  async dispose(): Promise<void>             // 释放这个 Agent，幂等
+  private async drain(): Promise<void>       // 内部循环：顺序处理 inbox 里排队的每条消息
+}
+```
 
 ## 2. inbox：类比"收件篮"，不是"打断你正在做的事"
 

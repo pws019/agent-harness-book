@@ -2,6 +2,34 @@
 
 > 素材来源：DSH `docs/subsystems/llm-streaming.zh.md`（1086行）、`docs/agent-lifecycle.zh.md`。
 
+## 0. 前置知识：流式协议到底是怎么回事（面向没做过后端的读者）
+
+如果你用过 ChatGPT/Claude 网页版，文字一个字一个"打字机"式蹦出来——这就是流式响应，跟前端常见的 SSE（Server-Sent Events）或 `fetch` 读 `ReadableStream` 是同一类技术。
+
+**为什么要流式**：模型生成一个长回答可能要十几秒。等它全部生成完再一次性 HTTP 响应返回，用户就要盯着白屏等。流式的做法是：模型每生成一点内容，服务端就立刻通过同一个还没关闭的 HTTP 连接推给你，这就是"逐字蹦字"效果的来源。
+
+**传输层长什么样**：provider 的流式 API 底层基本都是 SSE——一个普通 HTTP 响应，`Content-Type: text/event-stream`，服务端不关闭连接，持续往里写数据，每条消息形如：
+
+```
+data: {"type":"content_block_delta","delta":{"text":"Hello"}}
+
+data: {"type":"content_block_delta","delta":{"text":" world"}}
+
+data: {"type":"message_stop"}
+
+```
+
+每行 `data: ...` 是一个事件，`\n\n` 分隔。
+
+**"分片"其实叠了两层，容易混**：
+
+- **网络层分片（TCP/HTTP 层面）**：一条 SSE 消息可能被 TCP 拆成好几个包，或者反过来好几条消息粘在一起到达。这一层通常由 HTTP 客户端库/浏览器帮你缝合好了，你拿到的是一行一行完整的 `data: ...`，不用自己处理。
+- **业务层分片（下面 `StreamChunk` 这一层，我们代码真正要处理的）**：就算拿到一条完整的 SSE 事件，它携带的内容本身也是模型故意拆碎的——因为模型是一个 token 一个 token 生成的，"Hello world"可能被拆成 `"Hello"` 和 `" world"` 两条事件分开发。工具调用参数更极端：`{"path": "a/b.ts"}` 可能被拆成 `{"path": "a`、`/b.ts"}` 好几条事件，中间任何时刻你手里都只有半截 JSON，直接 `JSON.parse` 会报错。
+
+下面第 3、4 节讲的 `BlockAssembler` 就是解决**第二层**分片：把按 `index` 归属同一个内容块的碎片重新拼回完整文本/JSON，拼完才能用。第一层网络分片是 HTTP 客户端库的事，跟我们业务代码无关。
+
+**为什么会有各种异常（畸形流、重复 finish 等）**：一次性 HTTP 请求"要么成功要么失败"，状态很简单；流式请求把"一次交互"拉长成了一连串持续几秒到几十秒、随时可能中断的事件——网络抖动会断连（对应"中断/取消"）、provider 服务端 bug 会发出不该发的东西（对应"重复 finish"）、适配器翻译逻辑写错会产生不认识的类型（对应"未知 chunk 类型"）。这正是下面说的"流式响应的本质复杂性来自网络分片和取消随时可能发生"。
+
 ## 1. 为什么不能直接把 provider 的流事件甩给上层
 
 OpenAI 的流式事件和 Anthropic 的流式事件长得完全不一样：字段名不同、分片粒度不同、结束标记不同。如果 Agent loop、UI 渲染、日志记录这三处消费方都直接认 provider 的原始事件类型，换一个 provider 就要在三个地方同时改代码。

@@ -2,6 +2,18 @@
 
 > 素材来源：DSH `docs/subsystems/tools.zh.md`、`docs/tool-execution-pipeline.zh.md`、`docs/cookbook/adding-a-tool.zh.md`、`docs/tool-catalog.zh.md`。
 
+## 0. 前置知识：两个今天会用到的背景概念
+
+**JSON Schema 是什么**：跟 TypeScript 的 `interface`/`type` 不是一回事——TS 类型只在编译时检查，运行时早就被擦除了。JSON Schema 是一份**运行时**可以拿去校验任意 JSON 数据的规范描述，写成普通 JSON 对象，比如：
+
+```json
+{ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false }
+```
+
+它能回答"这段来路不明的 JSON（比如模型生成的工具调用参数）到底符不符合我期望的形状"，而 TS 类型做不到这件事——模型返回的是字符串，你没法指望 TS 编译器帮你在运行时检查它。这就是为什么下面第3节会看到，每个工具定义里描述参数形状的那个字段（`parameters`）要单独写一份 JSON Schema，而不是直接写 TS 类型完事。
+
+**JS 异步函数的一条关键运行时规则**：`async function foo() { doSomethingSync(); await bar(); ... }`——调用 `foo()` 的那一刻，`doSomethingSync()` 这部分代码是**立即同步执行**的，一直执行到第一个 `await` 才会把控制权交还出去。也就是说 `const p = foo()` 这一行代码执行完的时候，函数体里第一个 `await` 之前的所有同步代码**已经跑完了**，不是"排到队列里等以后再跑"。这条规则今天会让你亲手踩一个坑（见第5节），Day5、Day6 还会再遇到同一类问题，先记住这条规则比每次单独排查更重要。
+
 ## 1. "浅工具"的真实代价
 
 想象一个"读文件"能力，如果拆成"浅工具"会长什么样：模型得先调 `open` 拿一个文件句柄，再调 `seek` 定位到某个字节偏移，再调 `read(n)` 读一段字节，最后调 `close` 释放。这四连招会导致：

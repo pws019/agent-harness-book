@@ -2,6 +2,14 @@
 
 > 阶段：I. 最小但正确的内核（收尾）　|　产出：`src/cli.ts`、`src/heuristic-adapter.ts`、20 条场景评测
 
+## 0. 前置知识：Node.js 命令行程序基础
+
+前端平时写的代码跑在浏览器里，`src/cli.ts` 是这门课第一次写"跑在终端里的 Node 程序"，几个小概念先过一下：
+
+- **`process.argv`**：Node 进程启动时，命令行输入的每一段参数会被塞进 `process.argv` 这个数组，比如 `pnpm cli -- --workspace foo --goal bar` 实际执行时 `process.argv` 大概长这样：`['/usr/bin/node', '/path/to/cli.js', '--workspace', 'foo', '--goal', 'bar']`——前两项永远是 node 可执行文件路径和脚本路径，从第三项起才是你真正传的参数。`src/cli.ts` 里的 `parseArgs()` 干的就是把这个扁平字符串数组解析成一个结构化的对象（类似前端解析 URL query string）。
+- **退出码（exit code）**：浏览器里的函数出错顶多是抛异常、打印到 console；命令行程序结束时要向操作系统汇报一个数字状态码，`0` 表示成功，非 `0`（通常 `1`）表示失败——这样其他脚本/CI 流程可以通过 `if [ $? -eq 0 ]` 这类判断知道你这个程序到底跑成功了没有，不用去猜"有没有打印错误日志"。
+- **`pnpm cli`**：对应 `package.json` 里的一条 `scripts` 命令，帮你省掉每次手写 `node --loader tsx src/cli.ts` 这种长命令；`--` 之后的部分是透传给你的脚本本身的参数，不是 pnpm 自己的参数。
+
 ## 今天要做什么
 
 不读新文档，把 Day1-6 搭好的每一层拼成一个真正能跑的 CLI，然后用 20 条场景测试证明它在各种"坏路径"下都有明确、可预期的行为——这是阶段一的毕业考核。

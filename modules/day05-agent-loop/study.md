@@ -2,6 +2,20 @@
 
 > 素材来源：DSH `docs/subsystems/core.zh.md`（1276行）、`docs/agent-lifecycle.zh.md`。
 
+## 0. 前置知识：`for await...of` 和 `AsyncIterable`
+
+Day2 的 `streamFake()` 和 Day3 `adapter.stream()` 返回的都是一个 `AsyncIterable<StreamChunk>`——一个"异步版本的数组"：普通 `for...of` 遍历一个数组，每次拿到的元素是立即可用的；`for await...of` 遍历一个 `AsyncIterable`，每次拿"下一个元素"本身是一个要 `await` 的异步操作（比如"等网络上再来一块数据"）。写法上：
+
+```ts
+for await (const chunk of adapter.stream(request)) {
+  assembler.push(chunk)
+}
+```
+
+这行代码的执行方式是：等第一个 chunk 到达 → 处理它 → 等第二个 chunk 到达 → 处理它 → ……直到流结束（底层对应一个 `AsyncGenerator`，也就是用 `async function*` 定义、内部用 `yield` 吐出一个个 chunk 的函数——`streamFake()` 就是这么写的）。你可以把它类比成前端处理 `ReadableStream`（比如 `fetch` 读流式响应体）时手写的 `while ((chunk = await reader.read()) ...)` 循环，`for await...of` 只是语言内置的、更简洁的等价写法。
+
+另外要记住 Day4 讲过的那条规则依然成立：`adapter.stream(request)` 这次调用，函数体里第一个 `yield`/`await` 之前的同步代码，在你拿到这个 `AsyncIterable` 对象的瞬间就已经执行了。
+
 ## 1. turn、step、attempt：三层嵌套关系，用"写连载小说"类比
 
 - **session**（整本书）：所有历史的容器。我们 MiniHarness 现在还只是一个内存数组（`history: Message[]`），Day8 起会换成仅追加事件日志。
