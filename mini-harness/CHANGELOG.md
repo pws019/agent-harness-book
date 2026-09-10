@@ -55,3 +55,24 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/scenarios.test.ts`（20 条）—— 阶段一毕业验收：成功、证据不足、工具失败（未知工具/非法参数/文件不存在/路径越界）、预算耗尽、取消（含 dispose）、模型层错误重试/耗尽/不可重试、跨天回归守卫（Day5 冻结 bug、重复工具调用不误去重）。
 
 至此 `pnpm test` 共 181 条测试全绿，`pnpm typecheck` 无错误。
+
+## 增量补充：Day5-7 练习题落地
+
+阶段一收尾之后，陆续把几天 exercise.md 里的练习任务补进了参考实现（不是新的一天，附在对应天数下）：
+
+- **Day5 任务3**：`executeToolCall()` 对 `ToolTimeoutError`/`ToolAbortedError` 原样抛出而不是转成 `isError` 结果，`runTurn()` 接住后让整个 turn 提前以 `cancelled` 收场，跳过这一步剩下的工具调用（`agent-loop.ts`、`agent-loop.test.ts` +2 条）。
+- **Day6 任务2**：`Agent.steer()`——在下一个 step 边界（而不是当前 step）插入引导消息，`AgentLoopOptions.pollSteering` 每个 step 开头轮询一次（`agent-handle.ts`、`agent-loop.ts`、`agent-handle.test.ts` +2 条）。
+- **Day6 任务3**：竞态测试从1种交错模式扩到3种，各跑100轮（`agent-handle.test.ts` +2 条）。
+- **Day6 任务4**：验证 `dispose()` 的 promise resolve 前后 `agent.status` 分别是什么，不只测最终状态（`agent-handle.test.ts` +1 条）。
+- **Day7 任务3**：补场景21——验证连续两次 `send()` 之间，第二轮发给模型的请求确实带着第一轮的完整问答（`scenarios.test.ts` +1 条）。
+
+至此 `pnpm test` 共 189 条测试全绿。
+
+## Day8：仅追加事件日志与真源
+
+新增：
+- `src/core/session.ts` —— `Session`：仅追加事件日志，`append()` 写入前校验 payload 是无损 JSON（`isJsonValue`，跟 Day3/Day6 判断"纯数据"同一个思路）、校验 turn/step/tool-call 的开闭配对不变式，任何一条不满足直接抛 `SessionAppendError`。`deriveMessages(events)`：唯一允许把事件日志派生成 `Message[]` 的纯函数，`tool/result` 按 `(turn,step)` 分组合并成一条 tool 消息，跟 `runTurn()` 现在的行为对齐。
+- `tests/session.test.ts`（18 条）—— JSON 校验的正反例、七种开闭配对非法序列、`deriveMessages` 的分组/纯函数/忽略非 surface 事件行为。
+- 刻意没做的事：`Agent`/`runTurn` 还没有真的接到 `Session` 上（留给 Day9 引入持久化时一起做）；`system/message`/`request/header`/`session/end-seed` 等 DSH 完整事件表里的字段，等对应话题出现真实需求再加。
+
+至此 `pnpm test` 共 207 条测试全绿，`pnpm typecheck` 无错误。
