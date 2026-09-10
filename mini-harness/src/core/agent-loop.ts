@@ -1,6 +1,7 @@
 import { generateWithRetry, type GenerateRuntime, type LlmAdapter, type RetryPolicy } from '../llm/adapter.js'
 import type { FinishReason, LlmFailure, Message, ToolCallBlock, ToolResultBlock } from '../llm/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
+import { ToolAbortedError, ToolTimeoutError } from '../tools/types.js'
 
 /**
  * 系统对"这一轮是否真的完成了"的判断结果，绝不是"模型自己说完成了"。
@@ -142,7 +143,24 @@ export async function* runTurn(
       }
 
       yield { type: 'tool-call', toolCall: call }
-      const { content, isError } = await executeToolCall(deps.tools, call, options.signal)
+
+      let outcome: { content: string; isError: boolean }
+      try {
+        outcome = await executeToolCall(deps.tools, call, options.signal)
+      } catch (error) {
+        // 超时/取消不是"业务失败"，是运行时层面的中止信号：不伪造一条工具结果、
+        // 不再处理这一步剩下的工具调用，直接让整个 turn 提前以 cancelled 收场。
+        // 呼应 Day2"未完成的工具调用一律丢弃"——这里丢弃的是本该发生、但没能
+        // 安全完成的这一次调用，而不是假装它有一个结果。
+        if (error instanceof ToolTimeoutError || error instanceof ToolAbortedError) {
+          const stopReason: StopReason = { kind: 'cancelled' }
+          yield { type: 'turn-end', stopReason }
+          return stopReason
+        }
+        throw error
+      }
+
+      const { content, isError } = outcome
       toolResults.push({ type: 'tool-result', toolCallId: call.id, content, isError })
       yield { type: 'tool-result', toolCallId: call.id, content, isError }
     }
@@ -156,9 +174,13 @@ export async function* runTurn(
 }
 
 /**
- * 执行一次工具调用，把"工具执行本身抛出的任何错误"翻译成一条 isError 工具结果，
- * 而不是让整个 turn 崩溃。覆盖的故障场景（对应 study.md 故障注入清单）：
- * 调用不存在的工具、参数不是合法 JSON、工具执行超时/被取消、工具内部抛出业务错误。
+ * 执行一次工具调用，把"工具执行本身抛出的、可以当成一条业务结果处理的错误"翻译成
+ * 一条 isError 工具结果，而不是让整个 turn 崩溃。覆盖的故障场景（对应 study.md 故障
+ * 注入清单）：调用不存在的工具、参数不是合法 JSON、工具内部抛出业务错误。
+ *
+ * ToolTimeoutError/ToolAbortedError 是例外：它们不是"这次调用失败了"这种业务结果，
+ * 是"这次调用没能安全跑完"这种运行时信号，原样往上抛，由 runTurn 决定让整个 turn
+ * 提前结束，而不是在这里伪造一条工具结果。
  */
 async function executeToolCall(
   tools: ToolRegistry,
@@ -176,6 +198,7 @@ async function executeToolCall(
     const result = await tools.execute(call.name, args, { signal: signal ?? new AbortController().signal, cwd: '.' })
     return { content: result.content, isError: false }
   } catch (error) {
+    if (error instanceof ToolTimeoutError || error instanceof ToolAbortedError) throw error
     return { content: error instanceof Error ? error.message : String(error), isError: true }
   }
 }

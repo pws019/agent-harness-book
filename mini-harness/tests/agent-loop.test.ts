@@ -4,7 +4,7 @@ import { LlmAdapter } from '../src/llm/adapter.js'
 import { streamFake } from '../src/llm/fake-adapter.js'
 import type { FinishReason, Message, StreamChunk } from '../src/llm/types.js'
 import { ToolRegistry } from '../src/tools/registry.js'
-import type { ToolDefinition } from '../src/tools/types.js'
+import { ToolAbortedError, ToolTimeoutError, type ToolDefinition } from '../src/tools/types.js'
 
 /** Replays a fixed script of assistant messages, one per call, regardless of what history says. */
 class ScriptedAdapter extends LlmAdapter {
@@ -32,6 +32,32 @@ function textMessage(text: string): Message {
 
 function toolCallMessage(id: string, name: string, args: unknown): Message {
   return { role: 'assistant', blocks: [{ type: 'tool-call', id, name, arguments: JSON.stringify(args) }] }
+}
+
+/** 一个 step 里同时请求两个工具调用，用来验证"第一个调用中止后，第二个绝不会被执行"。 */
+function twoToolCallMessage(): Message {
+  return {
+    role: 'assistant',
+    blocks: [
+      { type: 'tool-call', id: 'c1', name: 'flaky', arguments: '{}' },
+      { type: 'tool-call', id: 'c2', name: 'echo', arguments: JSON.stringify({ text: 'should not run' }) },
+    ],
+  }
+}
+
+/** 一个 execute() 就直接抛给定错误的假工具，名字固定叫 'flaky'。 */
+function flakyTool(error: Error): ToolDefinition<string> {
+  return {
+    name: 'flaky',
+    description: 'always throws the given error, to simulate a tool that times out or gets aborted mid-execution',
+    parameters: { type: 'object', additionalProperties: false, required: [], properties: {} },
+    output: { schema: { type: 'string' }, render: (_args, value) => value },
+    timeoutMs: 1_000,
+    isConcurrencySafe: () => true,
+    async execute(): Promise<string> {
+      throw error
+    },
+  }
 }
 
 function echoTool(): ToolDefinition<string> {
@@ -66,6 +92,13 @@ async function collect(gen: AsyncGenerator<AgentLoopEvent, StopReason>): Promise
 function newRegistryWithEcho(): ToolRegistry {
   const registry = new ToolRegistry()
   registry.define(echoTool())
+  return registry
+}
+
+function newRegistryWithEchoAndFlaky(error: Error): ToolRegistry {
+  const registry = new ToolRegistry()
+  registry.define(echoTool())
+  registry.define(flakyTool(error))
   return registry
 }
 
@@ -168,6 +201,46 @@ describe('runTurn: budgets always produce a single, unambiguous terminal state',
     const turnEndEvents = events.filter((e) => e.type === 'turn-end')
     expect(turnEndEvents).toHaveLength(1)
     expect((turnEndEvents[0] as { stopReason: StopReason }).stopReason).toEqual(stopReason)
+  })
+})
+
+describe('runTurn: a timed-out or aborted tool call terminates the turn early', () => {
+  it('ToolTimeoutError stops the turn as cancelled instead of producing an isError tool-result', async () => {
+    const adapter = new ScriptedAdapter([twoToolCallMessage()])
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const registry = newRegistryWithEchoAndFlaky(new ToolTimeoutError('fake timeout for testing'))
+    const { events, stopReason } = await collect(
+      runTurn(history, { adapter, tools: registry, provider: 'fake', model: 'x' }),
+    )
+
+    expect(stopReason).toEqual({ kind: 'cancelled' })
+
+    // 只有一次 turn-end，且事件里的 stopReason 和 return 值一致（跟前面那条"unambiguous
+    // terminal state"测试同一条不变式，但这里是靠工具中止触发的，不是预算耗尽）。
+    const turnEndEvents = events.filter((e) => e.type === 'turn-end')
+    expect(turnEndEvents).toHaveLength(1)
+    expect((turnEndEvents[0] as { stopReason: StopReason }).stopReason).toEqual(stopReason)
+
+    // 没有任何一条 isError 工具结果被伪造出来——中止就是中止，不装成一次失败的业务调用。
+    expect(events.some((e) => e.type === 'tool-result')).toBe(false)
+
+    // 第二个工具调用（echo）绝不会被尝试：既不会有它的 tool-call 事件，也不会有 tool-result。
+    const secondCallEvents = events.filter(
+      (e) => (e.type === 'tool-call' && e.toolCall.id === 'c2') || (e.type === 'tool-result' && e.toolCallId === 'c2'),
+    )
+    expect(secondCallEvents).toHaveLength(0)
+
+    // history 里没有被塞进一条半成品的 tool 消息——still 只有 user + assistant 两条。
+    expect(history).toHaveLength(2)
+  })
+
+  it('ToolAbortedError stops the turn as cancelled the same way ToolTimeoutError does', async () => {
+    const adapter = new ScriptedAdapter([twoToolCallMessage()])
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const registry = newRegistryWithEchoAndFlaky(new ToolAbortedError('fake aborted for testing'))
+    const { stopReason } = await collect(runTurn(history, { adapter, tools: registry, provider: 'fake', model: 'x' }))
+
+    expect(stopReason).toEqual({ kind: 'cancelled' })
   })
 })
 

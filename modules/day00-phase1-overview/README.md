@@ -77,6 +77,156 @@ CLI 把结果打印出来                            ← Day7：把以上全部�
 | [Day6](../day06-lifecycle-and-cancellation/) | 生命周期、取消与并发 | `Agent.send/cancel/dispose/whenIdle` | 外部怎么安全地控制这个循环——排队、取消、释放,不产生竞态 |
 | [Day7](../day07-milestone-cli/) | 里程碑一：CLI | 把以上全部拼装起来 | 验证六天搭的骨架能不能撑起一个真实可跑的东西，在各种坏路径下行为可预期 |
 
+## 类型怎么一层层复合起来（不是调用顺序，是"谁的字段装着谁"）
+
+上面那张图讲的是"谁调用谁"；这张图讲另一件事——**每天新定义的类型，最终是怎么被塞进后面某一天定义的另一个类型里的某个字段的**。自底向上一天天学，容易只看到"这一层又冒出几个新类型"，看不到它们其实一路复合成了一整棵树。四条主线,分别追一遍：
+
+**主线一：一条消息的内容，怎么从"一堆碎片"变成"历史记录里的一条"**
+
+```
+ContentBlock（Day2，联合类型：TextBlock/ReasoningBlock/ToolCallBlock/ToolResultBlock）
+  └─ Message.blocks: ContentBlock[]                        （Day2：一条消息 = 一个内容块数组）
+       ├─ GenerateOptions.messages: Message[]               （Day3：请求里塞的历史快照）
+       └─ GenerateResult.message: Message                   （Day3：这次调用组装出的新消息）
+            └─ TurnRecord.userMessage: Message              （Day6：记录这条 turn 在回应哪条用户消息）
+       └─ Agent.history: Message[]                          （Day6：整个对话历史，一路 push 进去的就是这些 Message）
+```
+
+**带例子走一遍**（用户问"帮我查一下 auth 模块"，模型回了一句话）：
+
+```jsonc
+// 1. ContentBlock（Day2）—— 最小的一块内容
+{ "type": "text", "text": "帮我查一下 auth 模块" }
+
+// 2. 包进 Message.blocks（Day2）—— 一条消息 = 角色 + 内容块数组
+{ "role": "user", "blocks": [ { "type": "text", "text": "帮我查一下 auth 模块" } ] }
+
+// 3. 这条 Message 进了 GenerateOptions.messages（Day3）—— 请求里带着的历史快照
+{ "provider": "fake", "model": "x", "messages": [ /* 上面这条 Message，以及更早的历史 */ ] }
+
+// 4. adapter 组装出一条新的 Message，成为 GenerateResult.message（Day3）
+{ "role": "assistant", "blocks": [ { "type": "text", "text": "好的，我先看看 auth 目录" } ] }
+
+// 5. 这条新 Message 原样存进 TurnRecord.userMessage 对应的那次 turn 记录（Day6）
+{ "userMessage": { "role": "user", "blocks": [ /* 第2步那条 */ ] }, "stopReason": { "kind": "completed" } }
+
+// 6. 两条 Message 都躺在 Agent.history 里（Day6）
+[
+  { "role": "user", "blocks": [ { "type": "text", "text": "帮我查一下 auth 模块" } ] },
+  { "role": "assistant", "blocks": [ { "type": "text", "text": "好的，我先看看 auth 目录" } ] }
+]
+```
+
+**主线二：一次工具调用，怎么从"消息里的一个块"变成"历史里的另一条消息"**
+
+```
+ToolCallBlock（Day2 定义，ContentBlock 的一种）
+  └─ 从 GenerateResult.message.blocks 里过滤出来      （Day5：runTurn 里的 toolCalls 数组）
+       └─ 传给 ToolRegistry.execute(call.name, args, ctx)   （Day4）
+            └─ 返回 ToolResult { content, value, ... }       （Day4：工具执行的规范结果）
+                 └─ 包装成 ToolResultBlock { toolCallId: call.id, content, isError }  （Day2 类型，Day5 组装）
+                      └─ 塞进新的 Message { role: 'tool', blocks: [...] }             （Day2 类型，Day5 用法）
+                           └─ history.push(...) 回到 Agent.history                    （Day6）
+```
+
+**带例子走一遍**（模型决定调用 `list_files` 查看 `src/auth` 目录）：
+
+```jsonc
+// 1. ToolCallBlock（Day2）—— 模型响应里的一个内容块，注意 arguments 是字符串
+{ "type": "tool-call", "id": "c1", "name": "list_files", "arguments": "{\"path\":\"src/auth\"}" }
+
+// 2. Day5 runTurn 从 message.blocks 里过滤出这类块，得到 toolCalls 数组
+[ /* 上面这个 ToolCallBlock */ ]
+
+// 3. 参数被 JSON.parse 之后，传给 ToolRegistry.execute('list_files', {path:'src/auth'}, ctx)（Day4）
+//    工具执行完，返回一个 ToolResult：
+{ "name": "list_files", "args": { "path": "src/auth" }, "value": { "entries": ["index.ts", "middleware.ts"] }, "content": "src/auth:\nindex.ts\nmiddleware.ts" }
+
+// 4. 包装成 ToolResultBlock（Day2 类型，Day5 组装）—— 用 toolCallId 指回第1步的 id
+{ "type": "tool-result", "toolCallId": "c1", "content": "src/auth:\nindex.ts\nmiddleware.ts", "isError": false }
+
+// 5. 塞进一条新的 role: 'tool' 消息（Day2 类型，Day5 用法）
+{ "role": "tool", "blocks": [ /* 上面这个 ToolResultBlock */ ] }
+
+// 6. history.push(...)，Agent.history 里紧跟在那条带 tool-call 的 assistant 消息后面（Day6）
+```
+
+**主线三：一次调用"怎么结束的"，怎么从 provider 的原始信号变成给用户看的最终状态**
+
+```
+FinishReason（Day2 定义：stop / tool-calls / max-tokens / aborted / error）
+  └─ GenerateResult.finish: FinishReason               （Day3：一次 provider attempt 的结束原因）
+       └─ runTurn 用它 + toolCalls.length 一起判断这一步该不该继续  （Day5，见 day05 study.md §2 的真值表）
+            └─ StopReason（Day5 自己定义的新类型：completed/cancelled/budget_exhausted/error——
+                          注意这不是 FinishReason 改名，是另一个类型，只在 error 分支复用了同一个 LlmFailure）
+                 └─ TurnRecord.stopReason: StopReason   （Day6：这条 turn 最终定格成哪一种终态）
+```
+
+**带例子走一遍**（正常完成的例子，加一个错误例子看 `LlmFailure` 怎么被原样复用）：
+
+```jsonc
+// 正常完成路径：
+// 1. 第一个 step，provider 说要调用工具（FinishReason，Day2/Day3）
+{ "kind": "tool-calls" }
+// runTurn 结合 toolCalls.length > 0，判定"还没完成"，继续跑下一 step（不产生 StopReason）
+
+// 2. 第二个 step，provider 说没别的事了（FinishReason）
+{ "kind": "stop" }
+// 这次 toolCalls.length === 0，runTurn 判定完成，产出 StopReason（Day5 定义，不是同一个类型）
+{ "kind": "completed" }
+
+// 3. 存进 TurnRecord.stopReason（Day6）
+{ "stopReason": { "kind": "completed" } }
+
+// 错误路径：LlmFailure 被原样复用，不是重新拼一份
+// GenerateResult.finish（Day3）：
+{ "kind": "error", "failure": { "code": "TIMEOUT", "message": "provider 响应超时" } }
+// runTurn 直接把同一个 failure 对象塞进 StopReason（agent-loop.ts:119，没有重新构造 LlmFailure）：
+{ "kind": "error", "failure": { "code": "TIMEOUT", "message": "provider 响应超时" } }
+```
+
+**主线四：这一路上发生的事件和取消原因，怎么被记下来**
+
+```
+AgentLoopEvent（Day5 定义：turn-start/step-start/model-response/tool-call/tool-result/step-end/turn-end）
+  └─ TurnRecord.events: AgentLoopEvent[]                （Day6：drain() 把 runTurn 产出的每个事件收集起来）
+
+AgentCancelCause（Day6 定义：user/parent/hook/disposed）
+  └─ TurnRecord.cancelCause?: AgentCancelCause          （Day6：这条 turn 如果是被取消的，原因记在这）
+```
+
+**带例子走一遍**（一次正常完成的 turn，和一次因为 dispose 被取消的 turn，对比着看）：
+
+```jsonc
+// 正常完成的 turn，events 里没有取消相关的内容，TurnRecord 也没有 cancelCause 字段：
+{
+  "userMessage": { "role": "user", "blocks": [ /* ... */ ] },
+  "events": [
+    { "type": "turn-start" },
+    { "type": "step-start", "step": 1 },
+    { "type": "model-response", "message": { /* ... */ }, "finish": { "kind": "stop" } },
+    { "type": "step-end", "step": 1 },
+    { "type": "turn-end", "stopReason": { "kind": "completed" } }
+  ],
+  "stopReason": { "kind": "completed" }
+  // 没有 cancelCause —— 这个字段是可选的（AgentCancelCause?），不是被取消的 turn 就不会有它
+}
+
+// 被 dispose() 取消的 turn：
+{
+  "userMessage": { "role": "user", "blocks": [ /* ... */ ] },
+  "events": [
+    { "type": "turn-start" },
+    { "type": "step-start", "step": 1 },
+    { "type": "turn-end", "stopReason": { "kind": "cancelled" } }
+  ],
+  "stopReason": { "kind": "cancelled" },
+  "cancelCause": { "kind": "disposed" }   // dispose() 内部调 cancel({kind:'disposed'}) 时记下的原因
+}
+```
+
+**怎么用这张图**：以后遇到一个陌生类型（比如 `ToolResultBlock`），先别慌，问自己两个问题——"这个类型是哪天定义的？"（决定去哪个 study.md 找它的设计意图），"它最终被装进了哪个更高层类型的哪个字段？"（决定它在整条链路里扮演什么角色）。四条主线基本覆盖了 Day1-7 所有跨天复用的类型；一个类型如果不在这四条线上，大概率是某一天内部的实现细节，不需要跨天追。
+
 ## 贯穿全程的几条设计主线（不属于任何单独一天，是反复出现的思想）
 
 这几条不是某一天的知识点，是从 Day2 到 Day6 反复出现、每次以不同形式印证的同一批原则——读代码时如果感觉"这个设计怎么又出现了"，大概率就是撞上了下面某一条：

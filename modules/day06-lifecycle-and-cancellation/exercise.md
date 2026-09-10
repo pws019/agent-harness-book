@@ -10,7 +10,7 @@
 
 ## 任务 2：实现 `steer()`（进阶）
 
-study.md 第2节提到我们没有实现 DSH 的 `steer`/`inject`。选一个来做：
+study.md 第3节提到我们没有实现 DSH 的 `steer`/`inject`。选一个来做：
 
 1. 在 `Agent` 上加一个 `steer(message: Message): void` 方法，把消息放进一个新的 `nextStepQueue`。
 2. 修改 `agent-loop.ts` 的 `runTurn()`，让它在每个 step 的开头检查有没有"外部注入"的新消息——你需要给 `runTurn` 增加一种方式接收这个队列（比如通过 `AgentLoopOptions` 传一个回调 `pollSteering?: () => Message[]`，每个 step 开始前调用一次，取出待处理的引导消息并追加进历史）。
