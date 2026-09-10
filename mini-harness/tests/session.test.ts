@@ -364,3 +364,77 @@ describe('closeDanglingActivity: sink forwarding', () => {
     expect(sunk).toEqual([])
   })
 })
+
+describe('Session.append: compaction/* pairing and range validity', () => {
+  function seeded(): Session {
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('user/message', { turn: 0, message: userText('hi') })
+    session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+    return session // 3 events, seqs 0,1,2
+  }
+
+  it('accepts a well-formed compaction/start -> compaction/summary -> compaction/end triple', () => {
+    const session = seeded()
+    expect(() => {
+      session.append('compaction/start', { fromSeq: 0, toSeq: 1 })
+      session.append('compaction/summary', { message: assistantText('summary') })
+      session.append('compaction/end', {})
+    }).not.toThrow()
+  })
+
+  it('rejects a range whose toSeq does not exist yet in the log', () => {
+    const session = seeded()
+    expect(() => session.append('compaction/start', { fromSeq: 0, toSeq: 99 })).toThrow(SessionAppendError)
+  })
+
+  it('rejects an inverted range (toSeq before fromSeq)', () => {
+    const session = seeded()
+    expect(() => session.append('compaction/start', { fromSeq: 2, toSeq: 0 })).toThrow(SessionAppendError)
+  })
+
+  it('rejects a second compaction/start while one is already open', () => {
+    const session = seeded()
+    session.append('compaction/start', { fromSeq: 0, toSeq: 1 })
+    expect(() => session.append('compaction/start', { fromSeq: 0, toSeq: 2 })).toThrow(SessionAppendError)
+  })
+
+  it('rejects compaction/summary or compaction/end without an open compaction/start', () => {
+    const session = seeded()
+    expect(() => session.append('compaction/summary', { message: assistantText('x') })).toThrow(SessionAppendError)
+    expect(() => session.append('compaction/end', {})).toThrow(SessionAppendError)
+  })
+})
+
+describe('deriveMessages: compaction replaces the covered range with its summary', () => {
+  it('a compacted range collapses into one summary message at its original position', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('user/message', { turn: 0, message: userText('old question') }) // seq 1
+    session.append('step/start', { turn: 0, step: 1 })
+    session.append('assistant/message', { turn: 0, step: 1, message: assistantText('old answer') }) // seq 3
+    session.append('step/end', { turn: 0, step: 1 })
+    session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', { turn: 1, message: userText('recent question') })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+    session.append('compaction/start', { fromSeq: 1, toSeq: 3 })
+    session.append('compaction/summary', { message: assistantText('summary of turn 0') })
+    session.append('compaction/end', {})
+
+    expect(deriveMessages(session.events)).toEqual([assistantText('summary of turn 0'), userText('recent question')])
+  })
+
+  it('an unclosed compaction (no compaction/end yet) leaves the original events untouched', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('user/message', { turn: 0, message: userText('hi') })
+    session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+    session.append('compaction/start', { fromSeq: 0, toSeq: 2 })
+    session.append('compaction/summary', { message: assistantText('half-done summary') })
+    // 没有 compaction/end -- 这次压缩没有真正生效。
+
+    expect(deriveMessages(session.events)).toEqual([userText('hi')])
+  })
+})

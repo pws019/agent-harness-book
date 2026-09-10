@@ -35,6 +35,9 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
       case 'assistant/message':
       case 'system/message':
       case 'tool/result':
+      case 'compaction/start':
+      case 'compaction/summary':
+      case 'compaction/end':
         break
       default:
         assertNeverEvent(event)

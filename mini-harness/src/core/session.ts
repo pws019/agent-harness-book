@@ -54,6 +54,15 @@ export interface SessionEventPayloadMap {
     readonly content: string
     readonly isError: boolean
   }
+  /**
+   * Day13：压缩不改写历史，只在日志末尾追加"这段范围要被摘要替换"的声明。`fromSeq`/
+   * `toSeq` 必须是已经存在的 seq（不能声明"压缩还没发生的事情"）。
+   */
+  'compaction/start': { readonly fromSeq: number; readonly toSeq: number }
+  /** 摘要内容，message.role 通常是 'assistant'。必须在一对 start/end 之间出现。 */
+  'compaction/summary': { readonly message: Message }
+  /** 关闭这次压缩声明。 */
+  'compaction/end': Record<string, never>
 }
 
 export type SessionEventType = keyof SessionEventPayloadMap
@@ -105,6 +114,7 @@ export class Session {
   private readonly clock: () => number
   private openTurn: number | undefined
   private openStep: OpenStep | undefined
+  private openCompaction: { readonly fromSeq: number; readonly toSeq: number } | undefined
 
   constructor(options: { readonly clock?: () => number } = {}) {
     this.clock = options.clock ?? Date.now
@@ -222,6 +232,30 @@ export class Session {
       case 'assistant/message':
       case 'system/message':
         return
+      case 'compaction/start': {
+        const { fromSeq, toSeq } = data as SessionEventPayloadMap['compaction/start']
+        if (this.openCompaction) {
+          throw new SessionAppendError('compaction/start while another compaction is still open')
+        }
+        if (fromSeq < 0 || toSeq < fromSeq || toSeq >= this.log.length) {
+          throw new SessionAppendError(
+            `compaction/start range [${fromSeq},${toSeq}] is invalid for a log of length ${this.log.length}`,
+          )
+        }
+        this.openCompaction = { fromSeq, toSeq }
+        return
+      }
+      case 'compaction/summary':
+        if (!this.openCompaction) {
+          throw new SessionAppendError('compaction/summary without an open compaction/start')
+        }
+        return
+      case 'compaction/end':
+        if (!this.openCompaction) {
+          throw new SessionAppendError('compaction/end without an open compaction/start')
+        }
+        this.openCompaction = undefined
+        return
       default:
         return assertNeverEventType(type)
     }
@@ -284,7 +318,43 @@ export function closeDanglingActivity(session: Session, reason: TurnEndReason, s
  * `history.push({ role: 'tool', blocks: toolResults })`），Day9 把 Agent 接到
  * Session 上时不需要改变这个形状。
  */
+export interface CompactionRange {
+  readonly fromSeq: number
+  readonly toSeq: number
+  readonly summary: Message
+}
+
+/**
+ * 扫一遍日志，把每一对完整的 compaction/start...compaction/summary...compaction/end
+ * 收集成一个区间。压缩事件永远追加在日志末尾（不改写历史），所以这一步必须先跑完整个
+ * 日志才能知道"哪些更早的 seq 被压缩了"——这也是 deriveMessages 从"单趟顺序处理"
+ * 变成"先扫一遍收集区间，再走一遍正式派生"的原因。
+ */
+/**
+ * 导出给 `compaction.ts` 用：规划下一次压缩之前，得先知道"哪些 seq 已经被压缩过了"，
+ * 不然重新压缩一遍已经压缩过的范围会产生互相重叠的区间（`deriveMessages` 按 `fromSeq`
+ * 去重的机制在两个区间共用同一个 `fromSeq` 时会失效——这是我们在写 Day13 测试时
+ * 真实碰到的一个坑，见 `modules/day13-context-compaction/study.md`）。
+ */
+export function collectCompactionRanges(events: readonly SessionEvent[]): CompactionRange[] {
+  const ranges: CompactionRange[] = []
+  let pending: { fromSeq: number; toSeq: number; summary?: Message } | undefined
+  for (const event of events) {
+    if (event.type === 'compaction/start') {
+      pending = { fromSeq: event.fromSeq, toSeq: event.toSeq }
+    } else if (event.type === 'compaction/summary' && pending) {
+      pending.summary = event.message
+    } else if (event.type === 'compaction/end' && pending?.summary) {
+      ranges.push({ fromSeq: pending.fromSeq, toSeq: pending.toSeq, summary: pending.summary })
+      pending = undefined
+    }
+  }
+  return ranges
+}
+
 export function deriveMessages(events: readonly SessionEvent[]): Message[] {
+  const ranges = collectCompactionRanges(events)
+  const emittedRangeStarts = new Set<number>()
   const messages: Message[] = []
   let pendingToolBlocks: Message['blocks'][number][] = []
 
@@ -294,7 +364,23 @@ export function deriveMessages(events: readonly SessionEvent[]): Message[] {
     pendingToolBlocks = []
   }
 
+  const findRange = (seq: number): CompactionRange | undefined =>
+    ranges.find((range) => seq >= range.fromSeq && seq <= range.toSeq)
+
   for (const event of events) {
+    const isSurfaceEvent = event.type === 'user/message' || event.type === 'assistant/message' || event.type === 'tool/result'
+    const range = isSurfaceEvent ? findRange(event.seq) : undefined
+    if (range) {
+      // 这个 seq 落在一段已经被压缩的范围里：只在第一次遇到这段范围时，把摘要插在
+      // 这里（保留它在时间线上原来的位置），范围内其余事件全部跳过，不重复插入。
+      if (!emittedRangeStarts.has(range.fromSeq)) {
+        flushToolGroup()
+        messages.push(range.summary)
+        emittedRangeStarts.add(range.fromSeq)
+      }
+      continue
+    }
+
     switch (event.type) {
       case 'user/message':
         flushToolGroup()
@@ -318,6 +404,9 @@ export function deriveMessages(events: readonly SessionEvent[]): Message[] {
       case 'step/end':
       case 'tool/call':
       case 'system/message':
+      case 'compaction/start':
+      case 'compaction/summary':
+      case 'compaction/end':
         break
       default:
         assertNeverEvent(event)

@@ -118,3 +118,13 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/token-meter.test.ts`（5条）、`tests/agent-loop.test.ts` 新增 4 条（`maxTokens` 预算，含 fail-closed 场景）、`tests/session-integration.test.ts` 新增 2 条（usage 是否正确挂在 `assistant/message` 上）。
 
 至此 `pnpm test` 共 265 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day13：上下文窗口与压缩
+
+新增：
+- `src/core/session.ts` —— `SessionEventPayloadMap` 新增 `compaction/start`（`{fromSeq,toSeq}`，校验范围必须落在已存在的 seq 内）、`compaction/summary`（`{message}`）、`compaction/end`（`{}`），三者必须按顺序配对出现，不改写、不删除被压缩范围内的原始事件。`deriveMessages()` 从单趟扫描改成两趟：先 `collectCompactionRanges()`（现已导出）收集完整的压缩区间，再正式派生时把落在某个区间里的 surface 事件跳过、换成一条摘要消息（区间第一次出现的位置插入，只插一次）。
+- `src/core/compaction.ts` —— `planCompaction(events, {keepRecentSurfaceEvents})`：纯函数，决定压缩范围和摘要（今天只做确定性裁剪——把被压缩范围内的文本原样拼接，不调用任何模型）；`applyCompaction(session, plan)`：真正追加那三条事件（文档注明这三次 append 不是原子的，留给 exercise 任务3 修）。
+- **修了一个真实 bug**：`planCompaction` 第一版只看"全部 surface 事件"，对同一段历史重复压缩时，新旧两个区间会算出相同的 `fromSeq`，`deriveMessages` 按 `fromSeq` 去重的机制把第二个摘要误判成"已经插过"，直接丢失。修复：`planCompaction` 先排除已经被 `collectCompactionRanges()` 覆盖的 seq，只在未压缩过的部分里规划新区间。细节见 `modules/day13-context-compaction/study.md` 第3节。
+- `tests/compaction.test.ts`（5条，含"needle in a haystack"和重复压缩场景）、`tests/session.test.ts` 新增 7 条（`compaction/*` 开闭校验、`deriveMessages` 压缩替换行为）。
+
+至此 `pnpm test` 共 277 条测试全绿，`pnpm typecheck` 无错误。
