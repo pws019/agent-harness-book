@@ -1,3 +1,4 @@
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { SessionEvent } from './session.js'
 
 /**
@@ -10,6 +11,16 @@ export interface RawStore {
   appendLine(line: string): void
   /** 读出目前为止写入的所有原始行，按写入顺序。 */
   readLines(): readonly string[]
+  /**
+   * 只保留前 `count` 行，物理丢弃后面的内容——`JsonlSessionStore.load()` 发现日志被
+   * 写到一半（`truncated: true`）时会调用它，把那条没写完、没有结尾换行符的垃圾尾巴
+   * 从"磁盘"上真正清掉。这不是可有可无的清理：如果不清掉，下一次 `appendLine()` 会
+   * 直接把新的一行接在这条没有换行符结尾的垃圾后面，两条本该独立的行会粘成一行完全
+   * 无法解析的乱码——这是我们在写 Day14 集成测试时真实碰到的一个坑，见
+   * `modules/day14-milestone-two/README.md`。可选：只有支持物理截断的实现才需要提供，
+   * 不提供的话 `load()` 就跳过这一步修复（比如某些只追加、不支持随机写的真实存储后端）。
+   */
+  truncateTo?(count: number): void
 }
 
 /** 内存实现：`corruptLine` 是刻意留的"改坏某一行"接口，用来在测试里模拟磁盘损坏/写到一半。 */
@@ -30,6 +41,45 @@ export class InMemoryRawStore implements RawStore {
       throw new RangeError(`no line at index ${index}`)
     }
     this.lines[index] = text
+  }
+
+  truncateTo(count: number): void {
+    this.lines.length = count
+  }
+}
+
+/**
+ * 真实文件版的 `RawStore`——Day7-13 一直只在内存里跑，Day14 的 CLI 第一次需要真的
+ * 把一份调查会话存到磁盘上、下次启动时能续上。每次 `appendLine` 都同步写入并 flush
+ * （`{flush: true}` 的效果由 `appendFileSync` 本身保证：它是同步系统调用，返回时数据
+ * 已经交给了操作系统），不做内存缓冲——今天的目标是"正确优先"，不是"吞吐量优先"，
+ * Day9 exercise 任务4 留的那道"flush 时机该放哪层"思考题，在这里可以看到一个具体的
+ * （偏保守的）答案。
+ */
+export class FileRawStore implements RawStore {
+  constructor(private readonly path: string) {}
+
+  static exists(path: string): boolean {
+    return existsSync(path)
+  }
+
+  appendLine(line: string): void {
+    appendFileSync(this.path, `${line}\n`, 'utf8')
+  }
+
+  readLines(): readonly string[] {
+    if (!existsSync(this.path)) return []
+    const content = readFileSync(this.path, 'utf8')
+    if (content.length === 0) return []
+    const lines = content.split('\n')
+    // 文件末尾正常会有一个尾随换行符，split 出来会多一个空字符串元素——不是一行"空事件"，
+    // 是文件格式的产物，过滤掉。真正的半行损坏（没有换行符结尾）会是非空字符串，不受影响。
+    return lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines
+  }
+
+  truncateTo(count: number): void {
+    const kept = this.readLines().slice(0, count)
+    writeFileSync(this.path, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8')
   }
 }
 
@@ -84,6 +134,12 @@ export class JsonlSessionStore {
     this.raw.appendLine(JSON.stringify(line))
   }
 
+  /**
+   * 加载整份日志。如果检测到最后一行是"写到一半"的（`truncated: true`），会顺手调用
+   * `raw.truncateTo?.()` 把这条损坏的尾巴从底层物理清掉——不清掉的话，之后继续
+   * `append()` 会把新事件直接接在这条没有换行符结尾的垃圾后面，两条本该独立的行会
+   * 粘成一行、后面全部读不出来。见 `RawStore.truncateTo` 的文档注释。
+   */
   load(): { readonly header: SessionHeader; readonly events: readonly SessionEvent[]; readonly truncated: boolean } {
     const lines = this.raw.readLines()
     if (lines.length === 0) {
@@ -113,6 +169,9 @@ export class JsonlSessionStore {
         throw new SessionLoadError(`corrupted event at line ${i + 1}: ${(error as Error).message}`)
       }
       events.push(parsed.event)
+    }
+    if (truncated) {
+      this.raw.truncateTo?.(1 + events.length) // 1 为 header 行
     }
     return { header, events, truncated }
   }

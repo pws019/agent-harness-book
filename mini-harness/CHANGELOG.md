@@ -128,3 +128,16 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/compaction.test.ts`（5条，含"needle in a haystack"和重复压缩场景）、`tests/session.test.ts` 新增 7 条（`compaction/*` 开闭校验、`deriveMessages` 压缩替换行为）。
 
 至此 `pnpm test` 共 277 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day14：里程碑二——可恢复的长会话
+
+阶段二收尾。把 Day8-13 全部接进 Day7 的 CLI，用一条端到端测试证明整条链路在真实文件系统上收敛。
+
+新增：
+- `src/core/persistence.ts` —— `FileRawStore`：真实文件版的 `RawStore`，`appendFileSync`/`readFileSync` 同步读写，不做内存缓冲。`RawStore` 接口新增可选的 `truncateTo(count)`；`JsonlSessionStore.load()` 检测到 `truncated: true` 时会自动调用它，把损坏的尾巴从物理文件上真正切掉。
+- `src/cli.ts` —— `CliArgs` 新增 `--session-file <path>`：文件不存在就 `JsonlSessionStore.create()`，已存在就 `load()` + `Agent.restore()`；新增两个子命令 `inspect-session <path>`（跑 Day10 的 `projectSummary()`/`deriveTitle()`）、`replay-session <path>`（跑 Day8 的 `deriveMessages()` 打印完整对话）。
+- **修了一个真实 bug**：`load()` 第一版只在内存里丢弃截断的最后一行，磁盘上那条没有结尾换行符的垃圾原样留着——下一次 `appendLine()` 会把新事件直接拼在这条垃圾后面，两行粘成一行完全读不出来，"半行损坏"被续写变成了"整份读不出来"。修复：`RawStore` 加 `truncateTo`，`load()` 检测到截断后立刻调用它物理修复。细节见 `modules/day14-milestone-two/README.md`。
+- `tests/persistence.test.ts` 新增 4 条（`FileRawStore` 真实文件读写、截断修复行为）、`tests/session-milestone.test.ts`（2条，端到端：完整调查落盘 + 模拟崩溃后用同一份文件继续调查）。
+- **修了第二个真实 bug（自动化测试测不出来的那种）**：`main()` 用 `argv[0] === 'inspect-session'` 判断子命令，但手动执行 `pnpm cli -- inspect-session <path>` 时直接报了个不相关的"缺少 --query"错误。原因：有的 pnpm 版本会把 `pnpm run <script> -- <args>` 里的 `--` 原样转发，`argv[0]` 实际是字符串 `'--'`，子命令判断直接失配、落到默认调查分支。测试测不出来是因为 `tests/session-milestone.test.ts` 直接调用 `runInvestigation(parseArgs([...]))`，绕开了 `main()`/`process.argv` 这层——这是"胶水层代码只有真的跑一遍 CLI 才能验证"的一个具体例子。修复：`main()` 开头剥掉开头那一个（如果有）字面量 `'--'`。
+
+至此 `pnpm test` 共 283 条测试全绿，`pnpm typecheck` 无错误。**阶段二（Day8-14，可回放的状态与上下文）完成。**
