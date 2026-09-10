@@ -30,6 +30,25 @@ describe('ToolRegistry.schemas() never leaks implementation details to the model
   })
 })
 
+describe('ToolRegistry.undefine', () => {
+  it('removes a tool so it no longer appears in schemas() or has(), and returns whether it existed', () => {
+    const registry = newRegistry()
+    expect(registry.has('list_files')).toBe(true)
+
+    expect(registry.undefine('list_files')).toBe(true)
+    expect(registry.has('list_files')).toBe(false)
+    expect(registry.schemas().some((s) => s.name === 'list_files')).toBe(false)
+
+    expect(registry.undefine('list_files')).toBe(false) // 第二次撤销同一个名字：没东西可撤，返回 false
+  })
+
+  it('undefining one tool does not affect the others', () => {
+    const registry = newRegistry()
+    registry.undefine('list_files')
+    expect(registry.schemas().map((s) => s.name).sort()).toEqual(['read_file', 'search_text'])
+  })
+})
+
 describe('read_file: deep interface behavior', () => {
   it('reads a file with default offset/limit', async () => {
     const registry = newRegistry()

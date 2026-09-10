@@ -33,6 +33,7 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
       case 'step/end':
       case 'user/message':
       case 'assistant/message':
+      case 'system/message':
       case 'tool/result':
         break
       default:

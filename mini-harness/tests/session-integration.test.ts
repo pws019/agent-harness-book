@@ -245,3 +245,73 @@ describe('steer() messages are logged into the session as user/message events', 
     ])
   })
 })
+
+describe('systemPrompt: only logged when configured, always from a fresh tool snapshot', () => {
+  function newAgentWithTools(tools: ToolRegistry) {
+    return new Agent({
+      adapter: new ScriptedAdapter([assistantText('done')]),
+      tools,
+      provider: 'fake',
+      model: 'x',
+      systemPrompt: { identity: 'investigator', workspaceRoot: '/repo' },
+    })
+  }
+
+  it('does nothing when deps.systemPrompt is not set', async () => {
+    const agent = new Agent({ adapter: new ScriptedAdapter([assistantText('ok')]), tools: new ToolRegistry(), provider: 'fake', model: 'x' })
+    agent.send(userText('go'))
+    await agent.whenIdle()
+    expect(agent.sessionEvents.some((e) => e.type === 'system/message')).toBe(false)
+  })
+
+  it('logs exactly one system/message per turn, right after user/message', async () => {
+    const agent = newAgentWithTools(new ToolRegistry())
+    agent.send(userText('go'))
+    await agent.whenIdle()
+
+    expect(agent.sessionEvents.map((e) => e.type)).toEqual([
+      'turn/start',
+      'user/message',
+      'system/message',
+      'step/start',
+      'assistant/message',
+      'step/end',
+      'turn/end',
+    ])
+    // system/message 是纯审计记录，不参与派生历史——只有 user/assistant/tool 三种消息。
+    expect(agent.history).toEqual([userText('go'), assistantText('done')])
+  })
+
+  it('reflects a tool removed from the registry between turns, not a stale snapshot from turn 1', async () => {
+    const tools = new ToolRegistry()
+    tools.define({
+      name: 'list_files',
+      description: 'lists files',
+      parameters: { type: 'object', additionalProperties: false, required: [], properties: {} },
+      output: { schema: { type: 'string' }, render: () => '' },
+      async execute() {
+        return ''
+      },
+    })
+    const agent = new Agent({
+      adapter: new ScriptedAdapter([assistantText('one'), assistantText('two')]),
+      tools,
+      provider: 'fake',
+      model: 'x',
+      systemPrompt: { identity: 'investigator', workspaceRoot: '/repo' },
+    })
+
+    agent.send(userText('first'))
+    await agent.whenIdle()
+    tools.undefine('list_files')
+    agent.send(userText('second'))
+    await agent.whenIdle()
+
+    const systemMessages = agent.sessionEvents.filter((e) => e.type === 'system/message') as ReadonlyArray<{
+      readonly message: string
+    }>
+    expect(systemMessages).toHaveLength(2)
+    expect(systemMessages[0]!.message).toContain('list_files')
+    expect(systemMessages[1]!.message).not.toContain('list_files')
+  })
+})

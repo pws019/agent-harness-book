@@ -96,3 +96,14 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/session-projection.test.ts`（7条）、`tests/spill.test.ts`（5条）。
 
 至此 `pnpm test` 共 245 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day11：系统提示词与能力组装
+
+新增：
+- `src/core/system-prompt.ts` —— `buildSystemPrompt(sections)`：无状态纯函数，从身份/工作区/工具列表/任务上下文四个固定分段拼系统提示词，不缓存任何东西。
+- `src/tools/registry.ts` —— 新增 `ToolRegistry.undefine(name)`：撤销一次注册，返回这个名字之前是不是真的注册过。
+- `src/core/session.ts` —— `SessionEventPayloadMap` 新增 `system/message`（`{turn, message: string}`），纯审计记录，`deriveMessages()` 跳过它，不产出消息（`GenerateOptions.system` 本来就是独立字段，`Role` 类型里没有 `'system'`）。
+- `src/core/agent-handle.ts` —— `AgentDeps` 新增可选 `systemPrompt?: Omit<SystemPromptSections, 'tools'>`：配置了才会在每个 turn 开头组装并记录一条 `system/message`；`tools` 字段被类型系统排除在外，只能来自 `deps.tools.schemas()` 的实时快照，杜绝"传一份过期工具列表"的可能性。
+- `tests/system-prompt.test.ts`（4条）、`tests/tools.test.ts` 新增 2 条（`undefine`）、`tests/session-integration.test.ts` 新增 3 条（`systemPrompt` 集成，包括"工具被移除后重新组装的 prompt 确实变了"）。
+
+至此 `pnpm test` 共 254 条测试全绿，`pnpm typecheck` 无错误。

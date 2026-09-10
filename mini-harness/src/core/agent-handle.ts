@@ -9,6 +9,7 @@ import {
   type SessionSink,
   type TurnEndReason,
 } from './session.js'
+import { buildSystemPrompt, type SystemPromptSections } from './system-prompt.js'
 import type { LlmAdapter } from '../llm/adapter.js'
 import type { Message } from '../llm/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
@@ -37,6 +38,13 @@ export interface AgentDeps {
   readonly loopOptions?: Omit<AgentLoopOptions, 'signal' | 'pollSteering'>
   /** 可选：每次事件写进 Session 之后，同步转发给它——比如接一个 `JsonlSessionStore`。 */
   readonly sink?: SessionSink
+  /**
+   * 可选：配置了才会在每个 turn 开头组装并记录一条系统提示词（`system/message` 事件）。
+   * `tools` 字段不用填——每次都现取 `deps.tools.schemas()` 的最新快照，不会用一份
+   * 组装时缓存下来的旧列表（这是"工具被移除后 prompt 不再宣称它可用"这条不变式的
+   * 关键：如果这里偷懒缓存了 sections，移除工具之后 prompt 依然会撒谎）。
+   */
+  readonly systemPrompt?: Omit<SystemPromptSections, 'tools'>
 }
 
 export interface TurnRecord {
@@ -202,6 +210,10 @@ export class Agent {
       const turn = this.nextTurnNumber++
       this.appendEvent('turn/start', { turn })
       this.appendEvent('user/message', { turn, message: userMessage })
+      if (this.deps.systemPrompt) {
+        const prompt = buildSystemPrompt({ ...this.deps.systemPrompt, tools: this.deps.tools.schemas() })
+        this.appendEvent('system/message', { turn, message: prompt })
+      }
 
       this.controller = new AbortController()
       this.currentCancelCause = undefined

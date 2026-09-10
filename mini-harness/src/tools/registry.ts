@@ -31,6 +31,12 @@ export class ToolRegistry {
     return [...this.tools.values()].map(({ name, description, parameters }) => ({ name, description, parameters }))
   }
 
+  /** 撤销一次注册；返回这个名字之前是不是真的注册过。Day11 系统提示词组装要用到——
+   * 工具被撤销后，下一次 schemas() 就不会再带上它，重新组装的 prompt 也就不会再提它。 */
+  undefine(name: string): boolean {
+    return this.tools.delete(name)
+  }
+
   has(name: string): boolean {
     return this.tools.has(name)
   }

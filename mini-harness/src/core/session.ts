@@ -12,10 +12,10 @@ export type TurnEndReason =
   | { readonly kind: 'error'; readonly message: string }
 
 /**
- * 仅追加日志的事件词汇——今天只做 DSH 真实事件表里最核心的一个子集：
- * turn/step 边界 + 三种会变成消息的"surface"事件。故意不做的（写在 study.md 里）：
- * `system/message`（系统提示词组装，Day11 的话题）、`assistant/chunk`（流式中间态持久化，
- * Day9 崩溃恢复真正需要时再加）、`request/header`（请求信封快照，Day11 附近）。
+ * 仅追加日志的事件词汇——Day8 只做了 DSH 真实事件表里最核心的一个子集：turn/step
+ * 边界 + 三种会变成消息的"surface"事件。Day11 补上了 `system/message`（系统提示词
+ * 组装的审计记录）。仍然故意没做的：`assistant/chunk`（流式中间态持久化，Day9 崩溃
+ * 恢复真正需要时再加）、`request/header`（请求信封快照）。
  */
 export interface SessionEventPayloadMap {
   'turn/start': { readonly turn: number }
@@ -24,6 +24,13 @@ export interface SessionEventPayloadMap {
   'step/end': { readonly turn: number; readonly step: number }
   /** message.role 必须是 'user'。 */
   'user/message': { readonly turn: number; readonly message: Message }
+  /**
+   * 渲染好的系统提示词——只是审计记录，不参与 deriveMessages()。我们的 GenerateOptions
+   * 把 system 当独立字段传（不是 messages 数组里的一条消息，Role 也压根没有 'system'
+   * 这个值），这条事件纯粹是"这次 turn 用的是哪版 prompt"的留痕，跟 tool/call 记审计
+   * 但不直接产出消息是同一个道理。
+   */
+  'system/message': { readonly turn: number; readonly message: string }
   /** message.role 必须是 'assistant'；blocks 里可能包含 tool-call 块。 */
   'assistant/message': { readonly turn: number; readonly step: number; readonly message: Message }
   /** 模型请求了一次工具调用，原始 JSON 字符串，还没执行。 */
@@ -208,6 +215,7 @@ export class Session {
       }
       case 'user/message':
       case 'assistant/message':
+      case 'system/message':
         return
       default:
         return assertNeverEventType(type)
@@ -304,6 +312,7 @@ export function deriveMessages(events: readonly SessionEvent[]): Message[] {
       case 'step/start':
       case 'step/end':
       case 'tool/call':
+      case 'system/message':
         break
       default:
         assertNeverEvent(event)
