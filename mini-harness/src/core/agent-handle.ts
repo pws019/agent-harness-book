@@ -291,7 +291,12 @@ export class Agent {
       case 'model-response':
         // 空消息（比如 aborted-before-dispatch 产出的 { blocks: [] }）不记，不污染派生历史。
         if (event.message.blocks.length > 0) {
-          this.appendEvent('assistant/message', { turn, step: state.getOpenStep()!, message: event.message })
+          this.appendEvent('assistant/message', {
+            turn,
+            step: state.getOpenStep()!,
+            message: event.message,
+            ...(event.usage ? { usage: event.usage } : {}),
+          })
         }
         return
       case 'tool-call':

@@ -315,3 +315,36 @@ describe('systemPrompt: only logged when configured, always from a fresh tool sn
     expect(systemMessages[1]!.message).not.toContain('list_files')
   })
 })
+
+describe('token usage is logged alongside the assistant/message it belongs to', () => {
+  class UsageAdapter extends LlmAdapter {
+    async *stream(): AsyncIterable<StreamChunk> {
+      yield* streamFake({ message: assistantText('ok'), finishReason: { kind: 'stop' }, usage: { inputTokens: 12, outputTokens: 3 } })
+    }
+  }
+
+  it('carries the usage field when the adapter reports it', async () => {
+    const agent = new Agent({ adapter: new UsageAdapter(), tools: new ToolRegistry(), provider: 'fake', model: 'x' })
+    agent.send(userText('go'))
+    await agent.whenIdle()
+
+    const assistantEvent = agent.sessionEvents.find((e) => e.type === 'assistant/message') as
+      | { readonly usage?: { readonly inputTokens: number; readonly outputTokens: number } }
+      | undefined
+    expect(assistantEvent?.usage).toEqual({ inputTokens: 12, outputTokens: 3 })
+  })
+
+  it('omits the usage key entirely (not usage: undefined) when the adapter reports none', async () => {
+    const agent = new Agent({
+      adapter: new ScriptedAdapter([assistantText('ok')]),
+      tools: new ToolRegistry(),
+      provider: 'fake',
+      model: 'x',
+    })
+    agent.send(userText('go'))
+    await agent.whenIdle()
+
+    const assistantEvent = agent.sessionEvents.find((e) => e.type === 'assistant/message')!
+    expect('usage' in assistantEvent).toBe(false)
+  })
+})

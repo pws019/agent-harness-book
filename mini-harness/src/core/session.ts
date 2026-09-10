@@ -1,4 +1,4 @@
-import type { Message } from '../llm/types.js'
+import type { Message, TokenUsage } from '../llm/types.js'
 
 /**
  * 简化版的 turn 结束原因，只给 Session 记录用——刻意不 import agent-loop.ts 的
@@ -8,7 +8,7 @@ import type { Message } from '../llm/types.js'
 export type TurnEndReason =
   | { readonly kind: 'completed' }
   | { readonly kind: 'cancelled' }
-  | { readonly kind: 'budget_exhausted'; readonly reason: 'max_steps' | 'max_tool_calls' | 'deadline' }
+  | { readonly kind: 'budget_exhausted'; readonly reason: 'max_steps' | 'max_tool_calls' | 'deadline' | 'max_tokens' }
   | { readonly kind: 'error'; readonly message: string }
 
 /**
@@ -31,8 +31,13 @@ export interface SessionEventPayloadMap {
    * 但不直接产出消息是同一个道理。
    */
   'system/message': { readonly turn: number; readonly message: string }
-  /** message.role 必须是 'assistant'；blocks 里可能包含 tool-call 块。 */
-  'assistant/message': { readonly turn: number; readonly step: number; readonly message: Message }
+  /**
+   * message.role 必须是 'assistant'；blocks 里可能包含 tool-call 块。`usage` 是这次
+   * provider attempt 报告的 token 用量（Day12），跟模型输出一起存，不单独开一种事件——
+   * 这样"这条消息花了多少 token"和"这条消息内容是什么"永远配对出现，不会有一个
+   * 存在另一个却不存在的中间态。省略表示这次 attempt 没有上报用量（不是"零用量"）。
+   */
+  'assistant/message': { readonly turn: number; readonly step: number; readonly message: Message; readonly usage?: TokenUsage }
   /** 模型请求了一次工具调用，原始 JSON 字符串，还没执行。 */
   'tool/call': {
     readonly turn: number

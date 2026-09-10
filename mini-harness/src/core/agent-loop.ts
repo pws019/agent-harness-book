@@ -1,7 +1,8 @@
 import { generateWithRetry, type GenerateRuntime, type LlmAdapter, type RetryPolicy } from '../llm/adapter.js'
-import type { FinishReason, LlmFailure, Message, ToolCallBlock, ToolResultBlock } from '../llm/types.js'
+import type { FinishReason, LlmFailure, Message, TokenUsage, ToolCallBlock, ToolResultBlock } from '../llm/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
 import { ToolAbortedError, ToolTimeoutError } from '../tools/types.js'
+import { TokenMeter } from './token-meter.js'
 
 /**
  * 系统对"这一轮是否真的完成了"的判断结果，绝不是"模型自己说完成了"。
@@ -10,13 +11,19 @@ import { ToolAbortedError, ToolTimeoutError } from '../tools/types.js'
 export type StopReason =
   | { readonly kind: 'completed' }
   | { readonly kind: 'cancelled' }
-  | { readonly kind: 'budget_exhausted'; readonly reason: 'max_steps' | 'max_tool_calls' | 'deadline' }
+  | { readonly kind: 'budget_exhausted'; readonly reason: 'max_steps' | 'max_tool_calls' | 'deadline' | 'max_tokens' }
   | { readonly kind: 'error'; readonly failure: LlmFailure }
 
 export type AgentLoopEvent =
   | { readonly type: 'turn-start' }
   | { readonly type: 'step-start'; readonly step: number }
-  | { readonly type: 'model-response'; readonly message: Message; readonly finish: FinishReason; readonly attempts: number }
+  | {
+      readonly type: 'model-response'
+      readonly message: Message
+      readonly finish: FinishReason
+      readonly attempts: number
+      readonly usage?: TokenUsage
+    }
   | { readonly type: 'tool-call'; readonly toolCall: ToolCallBlock }
   | { readonly type: 'tool-result'; readonly toolCallId: string; readonly content: string; readonly isError: boolean }
   | { readonly type: 'step-end'; readonly step: number }
@@ -25,6 +32,13 @@ export type AgentLoopEvent =
 export interface AgentLoopOptions {
   readonly maxSteps?: number
   readonly maxToolCalls?: number
+  /**
+   * input+output token 累计上限（不含 cache 字段）。任何一次 provider attempt 没有
+   * 上报 usage，累计值就永久变成 `'unknown'`（见 TokenMeter）——这时候我们选择
+   * fail-closed：不知道有没有超预算，就当作已经超了，立刻停止，而不是假装还在
+   * 预算内继续跑下去。study.md 第3节详细讲了这条选择的权衡。
+   */
+  readonly maxTokens?: number
   readonly deadlineMs?: number
   readonly signal?: AbortSignal
   readonly retryPolicy?: RetryPolicy
@@ -67,6 +81,7 @@ export async function* runTurn(
   const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS
   const maxToolCalls = options.maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS
   const deadline = options.deadlineMs !== undefined ? Date.now() + options.deadlineMs : undefined
+  const tokenMeter = new TokenMeter()
   let toolCallCount = 0
   let step = 0
 
@@ -112,7 +127,7 @@ export async function* runTurn(
       options.retryRuntime,
     )
 
-    yield { type: 'model-response', message: result.message, finish: result.finish, attempts: result.attempts }
+    yield { type: 'model-response', message: result.message, finish: result.finish, attempts: result.attempts, usage: result.usage }
     history.push(result.message)
 
     // Cancellation can surface two ways from generateWithRetry: as finish.kind === 'aborted'
@@ -131,6 +146,22 @@ export async function* runTurn(
       const stopReason: StopReason = { kind: 'error', failure: result.finish.failure }
       yield { type: 'turn-end', stopReason }
       return stopReason
+    }
+
+    if (options.maxTokens !== undefined) {
+      tokenMeter.record(result.usage)
+      const totals = tokenMeter.totals()
+      // fail-closed：一旦累计值变成 'unknown'（某次 attempt 没上报 usage），我们没法
+      // 证明"还在预算内"，所以当作已经超预算处理，而不是悄悄放行继续跑下去。
+      const spent =
+        totals.inputTokens === 'unknown' || totals.outputTokens === 'unknown'
+          ? undefined
+          : totals.inputTokens + totals.outputTokens
+      if (spent === undefined || spent > options.maxTokens) {
+        const stopReason: StopReason = { kind: 'budget_exhausted', reason: 'max_tokens' }
+        yield { type: 'turn-end', stopReason }
+        return stopReason
+      }
     }
 
     const toolCalls = result.message.blocks.filter((block): block is ToolCallBlock => block.type === 'tool-call')

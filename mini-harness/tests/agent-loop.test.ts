@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { runTurn, type AgentLoopEvent, type StopReason } from '../src/core/agent-loop.js'
 import { LlmAdapter } from '../src/llm/adapter.js'
 import { streamFake } from '../src/llm/fake-adapter.js'
-import type { FinishReason, Message, StreamChunk } from '../src/llm/types.js'
+import type { FinishReason, Message, StreamChunk, TokenUsage } from '../src/llm/types.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { ToolAbortedError, ToolTimeoutError, type ToolDefinition } from '../src/tools/types.js'
 
@@ -23,6 +23,22 @@ class ScriptedAdapter extends LlmAdapter {
 
   get callCount(): number {
     return this.call
+  }
+}
+
+/** Like ScriptedAdapter, but each scripted step also reports (or omits) a token usage figure. */
+class UsageScriptedAdapter extends LlmAdapter {
+  private call = 0
+  constructor(private readonly script: ReadonlyArray<{ readonly message: Message; readonly usage?: TokenUsage }>) {
+    super()
+  }
+
+  async *stream(): AsyncIterable<StreamChunk> {
+    const { message, usage } = this.script[Math.min(this.call, this.script.length - 1)]!
+    this.call += 1
+    const hasToolCall = message.blocks.some((b) => b.type === 'tool-call')
+    const finishReason: FinishReason = hasToolCall ? { kind: 'tool-calls' } : { kind: 'stop' }
+    yield* streamFake({ message, seed: 1, finishReason, usage })
   }
 }
 
@@ -201,6 +217,54 @@ describe('runTurn: budgets always produce a single, unambiguous terminal state',
     const turnEndEvents = events.filter((e) => e.type === 'turn-end')
     expect(turnEndEvents).toHaveLength(1)
     expect((turnEndEvents[0] as { stopReason: StopReason }).stopReason).toEqual(stopReason)
+  })
+})
+
+describe('runTurn: token budget (maxTokens)', () => {
+  it('stops with budget_exhausted/max_tokens once accumulated input+output crosses the limit', async () => {
+    const adapter = new UsageScriptedAdapter([
+      { message: toolCallMessage('c1', 'echo', { text: 'again' }), usage: { inputTokens: 40, outputTokens: 10 } }, // 50 so far
+      { message: toolCallMessage('c2', 'echo', { text: 'again' }), usage: { inputTokens: 40, outputTokens: 10 } }, // 100 so far
+    ])
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const { stopReason } = await collect(
+      runTurn(history, { adapter, tools: newRegistryWithEcho(), provider: 'fake', model: 'x' }, { maxTokens: 80 }),
+    )
+
+    expect(stopReason).toEqual({ kind: 'budget_exhausted', reason: 'max_tokens' })
+  })
+
+  it('does not stop early when usage stays under the limit the whole turn', async () => {
+    const adapter = new UsageScriptedAdapter([
+      { message: textMessage('done'), usage: { inputTokens: 10, outputTokens: 5 } },
+    ])
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const { stopReason } = await collect(
+      runTurn(history, { adapter, tools: newRegistryWithEcho(), provider: 'fake', model: 'x' }, { maxTokens: 1000 }),
+    )
+
+    expect(stopReason).toEqual({ kind: 'completed' })
+  })
+
+  it('fails closed: a step that reports no usage at all is treated as budget-exhausted, not silently ignored', async () => {
+    const adapter = new UsageScriptedAdapter([
+      { message: toolCallMessage('c1', 'echo', { text: 'again' }) }, // no usage field -- provider didn't report it
+    ])
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const { stopReason } = await collect(
+      runTurn(history, { adapter, tools: newRegistryWithEcho(), provider: 'fake', model: 'x' }, { maxTokens: 1_000_000 }),
+    )
+
+    // 就算预算上限很宽松，"不知道花了多少"本身就足以触发 fail-closed。
+    expect(stopReason).toEqual({ kind: 'budget_exhausted', reason: 'max_tokens' })
+  })
+
+  it('without maxTokens configured, missing usage has no effect on the turn outcome', async () => {
+    const adapter = new UsageScriptedAdapter([{ message: textMessage('done') }]) // no usage field
+    const history: Message[] = [{ role: 'user', blocks: [{ type: 'text', text: 'go' }] }]
+    const { stopReason } = await collect(runTurn(history, { adapter, tools: newRegistryWithEcho(), provider: 'fake', model: 'x' }))
+
+    expect(stopReason).toEqual({ kind: 'completed' })
   })
 })
 

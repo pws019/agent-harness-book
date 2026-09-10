@@ -107,3 +107,14 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/system-prompt.test.ts`（4条）、`tests/tools.test.ts` 新增 2 条（`undefine`）、`tests/session-integration.test.ts` 新增 3 条（`systemPrompt` 集成，包括"工具被移除后重新组装的 prompt 确实变了"）。
 
 至此 `pnpm test` 共 254 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day12：Token 计量、预算与成本控制
+
+新增：
+- `src/core/token-meter.ts` —— `TokenMeter`：累加 input/output/cache token 用量；任何一次 `record(undefined)`（provider 没上报用量）会让 input/output/cache 全部**永久**变成 `'unknown'`，后续再正常上报也回不去数字；单次上报里缺失的 cache 字段视为合法的 0，跟"整体用量成谜"是不同语义。
+- `src/core/agent-loop.ts` —— `AgentLoopOptions` 新增 `maxTokens?`；`StopReason.budget_exhausted.reason` 新增 `'max_tokens'` 分支；预算检查选择 **fail-closed**：累计用量一旦变成 `unknown`，视为已超预算立刻停止，而不是悄悄放行。`AgentLoopEvent.model-response` 新增 `usage?` 字段透传 `GenerateResult.usage`。
+- `src/core/session.ts` —— `TurnEndReason.budget_exhausted.reason` 同步加 `'max_tokens'`；`assistant/message` 事件新增可选 `usage?: TokenUsage`，跟输出内容存在同一条事件里，不单独开事件，避免"消息写了但用量没写"这种不该存在的中间态。
+- `src/core/agent-handle.ts` —— 翻译层用条件展开 `...(event.usage ? { usage: event.usage } : {})` 写入 `usage`，确保没有用量时事件里连 `usage` 这个键都不存在（不是 `usage: undefined`）——再次踩中 Day8 `isJsonValue` 那条"undefined 不是合法 JSON 值"的规则，这次是主动避开，不是踩了才修。
+- `tests/token-meter.test.ts`（5条）、`tests/agent-loop.test.ts` 新增 4 条（`maxTokens` 预算，含 fail-closed 场景）、`tests/session-integration.test.ts` 新增 2 条（usage 是否正确挂在 `assistant/message` 上）。
+
+至此 `pnpm test` 共 265 条测试全绿，`pnpm typecheck` 无错误。
