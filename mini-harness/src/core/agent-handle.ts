@@ -1,7 +1,19 @@
 import { runTurn, type AgentLoopEvent, type AgentLoopOptions, type StopReason } from './agent-loop.js'
+import {
+  closeDanglingActivity,
+  deriveMessages,
+  Session,
+  type SessionEvent,
+  type SessionEventPayloadMap,
+  type SessionEventType,
+  type SessionSink,
+  type TurnEndReason,
+} from './session.js'
 import type { LlmAdapter } from '../llm/adapter.js'
 import type { Message } from '../llm/types.js'
 import type { ToolRegistry } from '../tools/registry.js'
+
+export type { SessionSink } from './session.js'
 
 /**
  * 取消的原因，不是一个布尔值。cause 会被复制到当前进行中活动的 AbortSignal.reason，
@@ -22,7 +34,9 @@ export interface AgentDeps {
   readonly provider: string
   readonly model: string
   readonly system?: string
-  readonly loopOptions?: Omit<AgentLoopOptions, 'signal'>
+  readonly loopOptions?: Omit<AgentLoopOptions, 'signal' | 'pollSteering'>
+  /** 可选：每次事件写进 Session 之后，同步转发给它——比如接一个 `JsonlSessionStore`。 */
+  readonly sink?: SessionSink
 }
 
 export interface TurnRecord {
@@ -32,8 +46,27 @@ export interface TurnRecord {
   readonly cancelCause?: AgentCancelCause
 }
 
+/** `StopReason.error` 携带完整的 LlmFailure；Session 记录只要一句人类可读的话，不认识 LlmFailure 这个类型。 */
+function toTurnEndReason(stopReason: StopReason): TurnEndReason {
+  switch (stopReason.kind) {
+    case 'completed':
+      return { kind: 'completed' }
+    case 'cancelled':
+      return { kind: 'cancelled' }
+    case 'budget_exhausted':
+      return { kind: 'budget_exhausted', reason: stopReason.reason }
+    case 'error':
+      return { kind: 'error', message: stopReason.failure.message }
+  }
+}
+
 /**
  * 一个进程内的 Agent 句柄：管理 turn 的排队、单 writer 执行、取消传播和幂等释放。
+ *
+ * Day9 起，`history` 不再是一个手动维护的字段——它是 `deriveMessages(session.events)`
+ * 现算出来的派生视图（见 session.ts）。`drain()` 是唯一的翻译层：`runTurn()` 本身对
+ * Session 一无所知，继续像 Day5-8 那样操作一个每次新建的 `Message[]` 草稿数组；
+ * `drain()` 把它消费到的每个 `AgentLoopEvent` 同步翻译成一条 `Session.append(...)`。
  *
  * 刻意简化（相对 DSH 的完整 AgentRegistry/AgentHandle 双层所有权模型）：
  * - 没有独立的"注册表 + 结构性所有者"两层所有权，只有一个持有者概念——谁拿到这个
@@ -43,9 +76,9 @@ export interface TurnRecord {
  *   活动"的引导消息，在下一个 step 边界生效，不打断当前 step 已经发出去的请求）。
  */
 export class Agent {
-  readonly history: Message[] = []
   readonly records: TurnRecord[] = []
 
+  private readonly session: Session
   private readonly nextTurnQueue: Message[] = []
   private readonly nextStepQueue: Message[] = []
   private controller: AbortController | undefined
@@ -53,11 +86,45 @@ export class Agent {
   private idleWaiters: Array<() => void> = []
   private disposed = false
   private runLoopPromise: Promise<void> | undefined
+  private nextTurnNumber: number
 
-  constructor(private readonly deps: AgentDeps) {}
+  constructor(
+    private readonly deps: AgentDeps,
+    restoredEvents?: readonly SessionEvent[],
+  ) {
+    this.session = restoredEvents ? Session.restoreFrom(restoredEvents) : new Session()
+    this.nextTurnNumber = 1 + Math.max(-1, ...this.session.events.filter((e) => e.type === 'turn/start').map((e) => e.turn))
+  }
+
+  /**
+   * 从持久化恢复：`events` 是上次 `store.load()` 读回来的日志。如果日志末尾挂着一个没
+   * 关闭的 turn（进程就是在那个点被杀掉的），立刻诚实地把它收尾（见 `closeDanglingActivity`），
+   * 不会假装那次调用成功了，也不会让这份历史带着一个永远打不开的开口。如果 `deps.sink`
+   * 已经指向重新打开的底层 store，收尾产生的这几条新事件也会同步镜像过去。
+   */
+  static restore(deps: AgentDeps, events: readonly SessionEvent[]): Agent {
+    const agent = new Agent(deps, events)
+    closeDanglingActivity(agent.session, { kind: 'cancelled' }, deps.sink)
+    return agent
+  }
+
+  private appendEvent<K extends SessionEventType>(type: K, data: SessionEventPayloadMap[K]): void {
+    const event = this.session.append(type, data)
+    this.deps.sink?.append(event)
+  }
 
   get status(): AgentStatus {
     return this.runLoopPromise ? 'running' : 'idle'
+  }
+
+  /** 模型消息历史——从事件日志现算出来的，不是单独维护的一份可能漂移的数组。 */
+  get history(): readonly Message[] {
+    return deriveMessages(this.session.events)
+  }
+
+  /** 底层事件日志，只读。给持久化（Day9 下半场）、投影/查询（Day10）用。 */
+  get sessionEvents(): readonly SessionEvent[] {
+    return this.session.events
   }
 
   /** 排队一个新 turn。空闲时会立刻唤醒 driver；运行中时新消息留在 inbox，等当前 turn 结束再处理。 */
@@ -132,13 +199,24 @@ export class Agent {
   private async drain(): Promise<void> {
     while (this.nextTurnQueue.length > 0 && !this.disposed) {
       const userMessage = this.nextTurnQueue.shift()!
-      this.history.push(userMessage)
+      const turn = this.nextTurnNumber++
+      this.appendEvent('turn/start', { turn })
+      this.appendEvent('user/message', { turn, message: userMessage })
 
       this.controller = new AbortController()
       this.currentCancelCause = undefined
       const events: AgentLoopEvent[] = []
+      // 当前开着的 step——只是为了翻译层给每条事件标上正确的 step 号；"这个 step 里还
+      // 挂着哪些没结果的 tool/call" 不需要在这里另存一份，session.danglingActivity()
+      // 已经从 Session 自己的簿记里能读到，见下面收尾那段。
+      let openStep: number | undefined
+
+      // this.history 在上面 append('user/message', ...) 之后已经现算出包含 userMessage 的
+      // 完整历史；这里拷贝一份给 runTurn 当草稿数组，它会在这个副本上继续 .push()，不会
+      // 碰 Session——Session 只由下面的翻译层写入。
+      const scratchHistory: Message[] = [...this.history]
       const generator = runTurn(
-        this.history,
+        scratchHistory,
         {
           adapter: this.deps.adapter,
           tools: this.deps.tools,
@@ -149,15 +227,29 @@ export class Agent {
         {
           ...this.deps.loopOptions,
           signal: this.controller.signal,
-          pollSteering: () => this.nextStepQueue.splice(0, this.nextStepQueue.length),
+          pollSteering: () => {
+            const steered = this.nextStepQueue.splice(0, this.nextStepQueue.length)
+            for (const message of steered) this.appendEvent('user/message', { turn, message })
+            return steered
+          },
         },
       )
 
       let step = await generator.next()
       while (!step.done) {
         events.push(step.value)
+        this.translateLoopEvent(turn, step.value, {
+          getOpenStep: () => openStep,
+          setOpenStep: (s) => (openStep = s),
+        })
         step = await generator.next()
       }
+
+      // turn/end 还没写，所以 openTurn 这时候必然还开着——closeDanglingActivity 负责把它
+      // 收尾：正常完成时 step 已经关过了，它只补一条 turn/end；异常终止（取消/预算耗尽/
+      // 错误）时 runTurn 可能没走到自己的 step-end 就直接返回了，这里会先诚实地给挂起的
+      // tool/call 补一条 isError 的 tool/result、再补 step/end，最后才写 turn/end。
+      closeDanglingActivity(this.session, toTurnEndReason(step.value), this.deps.sink)
 
       this.records.push({
         userMessage,
@@ -166,6 +258,54 @@ export class Agent {
         ...(this.currentCancelCause ? { cancelCause: this.currentCancelCause } : {}),
       })
       this.controller = undefined
+    }
+  }
+
+  private translateLoopEvent(
+    turn: number,
+    event: AgentLoopEvent,
+    state: {
+      readonly getOpenStep: () => number | undefined
+      readonly setOpenStep: (step: number | undefined) => void
+    },
+  ): void {
+    switch (event.type) {
+      case 'turn-start':
+        return // turn/start + user/message 已经在进入循环前写好了
+      case 'step-start':
+        state.setOpenStep(event.step)
+        this.appendEvent('step/start', { turn, step: event.step })
+        return
+      case 'model-response':
+        // 空消息（比如 aborted-before-dispatch 产出的 { blocks: [] }）不记，不污染派生历史。
+        if (event.message.blocks.length > 0) {
+          this.appendEvent('assistant/message', { turn, step: state.getOpenStep()!, message: event.message })
+        }
+        return
+      case 'tool-call':
+        this.appendEvent('tool/call', {
+          turn,
+          step: state.getOpenStep()!,
+          callId: event.toolCall.id,
+          name: event.toolCall.name,
+          arguments: event.toolCall.arguments,
+        })
+        return
+      case 'tool-result':
+        this.appendEvent('tool/result', {
+          turn,
+          step: state.getOpenStep()!,
+          callId: event.toolCallId,
+          content: event.content,
+          isError: event.isError,
+        })
+        return
+      case 'step-end':
+        this.appendEvent('step/end', { turn, step: event.step })
+        state.setOpenStep(undefined)
+        return
+      case 'turn-end':
+        return // 收尾统一在 drain() 里做（要先处理异常终止的补写），不在这里单独处理
     }
   }
 

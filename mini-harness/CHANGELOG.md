@@ -76,3 +76,14 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - 刻意没做的事：`Agent`/`runTurn` 还没有真的接到 `Session` 上（留给 Day9 引入持久化时一起做）；`system/message`/`request/header`/`session/end-seed` 等 DSH 完整事件表里的字段，等对应话题出现真实需求再加。
 
 至此 `pnpm test` 共 207 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day9：持久化、flush 与崩溃恢复
+
+新增：
+- `src/core/agent-handle.ts` —— **真正把 `Session` 接进 `Agent`**：`history` 从手动维护的字段变成 `get history() { return deriveMessages(session.events) }` 派生视图；`drain()` 新增翻译层 `translateLoopEvent()`，把每个 `AgentLoopEvent` 同步翻译成 `Session.append(...)`；`runTurn()`/`agent-loop.ts` 未改一行。新增 `appendEvent()` 统一包一层"顺手转发给可选的 `deps.sink`"。新增 `static restore(deps, events)`：用 `Session.restoreFrom()` 从持久化事件重建，收尾任何挂起的活动。
+- `src/core/session.ts` —— 新增 `Session.danglingActivity()`（读出当前挂起着什么）、`Session.restoreFrom(events)`（从既有事件重建，保留原始 seq/time）、`closeDanglingActivity(session, reason, sink?)`（诚实收尾：挂起的 tool/call 补一条 isError 的 tool/result，再补 step/end，最后写 turn/end；正常完成的 turn 也走这个函数，只是不需要补前两步）。
+- `src/core/persistence.ts` —— `RawStore`/`InMemoryRawStore`（可注入的"假磁盘"，带 `corruptLine()` 故障注入接口）、`JsonlSessionStore`：仅追加 JSONL，header 校验格式版本号，`load()` 区分"最后一行损坏（丢弃，`truncated:true`）"和"中间一行损坏（整份拒绝）"。
+- `tests/session-integration.test.ts`（6条）、`tests/persistence.test.ts`（6条）、`tests/persistence-integration.test.ts`（3条）、`tests/session.test.ts` 新增 11 条（`danglingActivity`/`restoreFrom`/`closeDanglingActivity`）。
+- **修了一个真实 bug**：`closeDanglingActivity` 第一版直接调 `session.append()`，绕开了 `Agent.appendEvent()` 那层"顺手转发给 sink"的包装，导致收尾产生的事件（尤其是每个 turn 都会有的那条 `turn/end`）只进了内存里的 Session，没有镜像进持久化 store——集成测试一跑，`agent.sessionEvents` 和 `store.load().events` 对不上。修复：给 `closeDanglingActivity` 加一个可选 `sink` 参数。细节见 `modules/day09-persistence-and-crash-recovery/study.md` 第4节。
+
+至此 `pnpm test` 共 233 条测试全绿，`pnpm typecheck` 无错误。

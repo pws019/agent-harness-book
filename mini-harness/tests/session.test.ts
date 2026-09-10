@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveMessages, isJsonValue, Session, SessionAppendError } from '../src/core/session.js'
+import { closeDanglingActivity, deriveMessages, isJsonValue, Session, SessionAppendError } from '../src/core/session.js'
 import type { Message } from '../src/llm/types.js'
 
 function userText(text: string): Message {
@@ -231,5 +231,136 @@ describe('deriveMessages', () => {
     session.append('turn/end', { turn: 1, reason: { kind: 'cancelled' } })
 
     expect(deriveMessages(session.events)).toEqual([userText('hi')])
+  })
+})
+
+describe('Session.danglingActivity', () => {
+  it('is undefined before any turn starts and after a turn cleanly ends', () => {
+    const session = new Session()
+    expect(session.danglingActivity()).toBeUndefined()
+    session.append('turn/start', { turn: 1 })
+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    expect(session.danglingActivity()).toBeUndefined()
+  })
+
+  it('reports the open turn with no step while a turn is open but no step has started', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 1 })
+    expect(session.danglingActivity()).toEqual({ turn: 1, step: undefined, pendingCallIds: [] })
+  })
+
+  it('reports the open step and any unresolved callIds', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'echo', arguments: '{}' })
+    expect(session.danglingActivity()).toEqual({ turn: 1, step: 1, pendingCallIds: ['c1'] })
+  })
+})
+
+describe('closeDanglingActivity', () => {
+  it('does nothing when there is no dangling activity', () => {
+    const session = new Session()
+    closeDanglingActivity(session, { kind: 'cancelled' })
+    expect(session.events).toHaveLength(0)
+  })
+
+  it('closes an open turn with no open step by writing just turn/end', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 1 })
+    closeDanglingActivity(session, { kind: 'cancelled' })
+    expect(session.events.map((e) => e.type)).toEqual(['turn/start', 'turn/end'])
+    expect(session.danglingActivity()).toBeUndefined()
+  })
+
+  it('writes a synthetic isError tool/result for every pending call, then step/end, then turn/end', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'echo', arguments: '{}' })
+    session.append('tool/call', { turn: 1, step: 1, callId: 'c2', name: 'echo', arguments: '{}' })
+
+    closeDanglingActivity(session, { kind: 'cancelled' })
+
+    const types = session.events.map((e) => e.type)
+    expect(types).toEqual([
+      'turn/start',
+      'step/start',
+      'tool/call',
+      'tool/call',
+      'tool/result',
+      'tool/result',
+      'step/end',
+      'turn/end',
+    ])
+    const results = session.events.filter((e) => e.type === 'tool/result') as ReadonlyArray<{
+      readonly callId: string
+      readonly isError: boolean
+    }>
+    expect(results.map((r) => r.callId).sort()).toEqual(['c1', 'c2'])
+    expect(results.every((r) => r.isError)).toBe(true)
+  })
+})
+
+describe('Session.restoreFrom', () => {
+  it('reproduces the exact same events, preserving original seq/time', () => {
+    const original = new Session({ clock: () => 12345 })
+    original.append('turn/start', { turn: 1 })
+    original.append('user/message', { turn: 1, message: userText('hi') })
+    original.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+
+    const restored = Session.restoreFrom(original.events)
+    expect(restored.events).toEqual(original.events)
+  })
+
+  it('correctly recomputes danglingActivity for a log that ends mid-turn (simulated crash)', () => {
+    const original = new Session()
+    original.append('turn/start', { turn: 1 })
+    original.append('step/start', { turn: 1, step: 1 })
+    original.append('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'echo', arguments: '{}' })
+    // 进程假装在这里被杀掉：没有 tool/result，没有 step/end，没有 turn/end。
+
+    const restored = Session.restoreFrom(original.events)
+    expect(restored.danglingActivity()).toEqual({ turn: 1, step: 1, pendingCallIds: ['c1'] })
+
+    // 恢复之后应该能正常收尾，不会因为"日志末尾没关闭"这件事本身被判定为损坏。
+    closeDanglingActivity(restored, { kind: 'cancelled' })
+    expect(restored.danglingActivity()).toBeUndefined()
+  })
+
+  it('rejects a genuinely inconsistent event list (tool/result for a callId that was never called)', () => {
+    const forged = Session.restoreFrom
+    // 手工拼一份"看起来像"事件列表、但因果关系不对的日志：直接从 restoreFrom 的合法输入
+    // 构造，再塞进一条从未被 tool/call 过的 tool/result。
+    const bogusEvents = [
+      { type: 'turn/start' as const, seq: 0, time: 0, turn: 1 },
+      { type: 'step/start' as const, seq: 1, time: 0, turn: 1, step: 1 },
+      { type: 'tool/result' as const, seq: 2, time: 0, turn: 1, step: 1, callId: 'ghost', content: 'x', isError: false },
+    ]
+    expect(() => forged(bogusEvents)).toThrow()
+  })
+})
+
+describe('closeDanglingActivity: sink forwarding', () => {
+  // 真实踩到的坑：closeDanglingActivity 第一版直接调 session.append()，没有把收尾产生的
+  // 事件转发给 sink——内存里的 Session 是对的，但镜像到持久化 store 的那份从最后一条
+  // 事件开始就漏掉了。这条测试锁死"传了 sink 就一定会收到收尾事件"这个行为。
+  it('forwards every event it writes to the given sink, not just to the session', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'echo', arguments: '{}' })
+
+    const sunk: string[] = []
+    closeDanglingActivity(session, { kind: 'cancelled' }, { append: (event) => sunk.push(event.type) })
+
+    expect(sunk).toEqual(['tool/result', 'step/end', 'turn/end'])
+  })
+
+  it('forwards nothing when there is no dangling activity to close', () => {
+    const session = new Session()
+    const sunk: string[] = []
+    closeDanglingActivity(session, { kind: 'cancelled' }, { append: (event) => sunk.push(event.type) })
+    expect(sunk).toEqual([])
   })
 })

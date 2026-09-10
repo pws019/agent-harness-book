@@ -102,6 +102,20 @@ export class Session {
     return this.log
   }
 
+  /**
+   * 目前还"挂起"着的活动——如果 `undefined`，说明日志在一个干净的边界上结束（没有开着
+   * 的 turn）。恢复一份中断的日志（Day9 持久化）或者异常终止一个正在跑的 turn 时，都要
+   * 先问一下这个，再决定要不要补写收尾事件（见 `closeDanglingActivity`）。
+   */
+  danglingActivity(): DanglingActivity | undefined {
+    if (this.openTurn === undefined) return undefined
+    return {
+      turn: this.openTurn,
+      step: this.openStep?.step,
+      pendingCallIds: this.openStep ? [...this.openStep.pendingCallIds] : [],
+    }
+  }
+
   append<K extends SessionEventType>(type: K, data: SessionEventPayloadMap[K]): SessionEvent {
     if (!isJsonValue(data)) {
       throw new SessionAppendError(`event "${type}" payload is not lossless JSON`)
@@ -110,6 +124,22 @@ export class Session {
     const event = { type, seq: this.log.length, time: this.clock(), ...data } as SessionEvent
     this.log.push(event)
     return event
+  }
+
+  /**
+   * 从磁盘上加载回来的一份已有事件列表重建一个 Session——保留原始 seq/time（不是重新
+   * 分配），但照样跑一遍开闭配对校验，重新算出"现在挂起着什么"。如果加载回来的事件序列
+   * 本身内部不自洽（比如一条 tool/result 对应的 callId 从来没有被调用过），说明磁盘上的
+   * 数据已经损坏，直接抛错——**日志末尾挂着一个没关闭的 turn/step 是正常的**（进程可能就是
+   * 在那个点被杀掉的），只有"事件之间的因果关系对不上"才算真正的损坏。
+   */
+  static restoreFrom(events: readonly SessionEvent[]): Session {
+    const session = new Session()
+    for (const event of events) {
+      session.checkInvariant(event.type, event)
+      session.log.push(event)
+    }
+    return session
   }
 
   private checkInvariant<K extends SessionEventType>(type: K, data: SessionEventPayloadMap[K]): void {
@@ -187,6 +217,47 @@ export class Session {
 
 function assertNeverEventType(type: never): never {
   throw new Error(`Unhandled SessionEventType: ${JSON.stringify(type)}`)
+}
+
+export interface DanglingActivity {
+  readonly turn: number
+  /** `undefined` 表示 turn 开了但一个 step 都还没开始（比如取消发生在第一次请求模型之前）。 */
+  readonly step: number | undefined
+  readonly pendingCallIds: readonly string[]
+}
+
+/** append() 之后想同步收到通知的调用方实现这个接口（`JsonlSessionStore` 已经满足）。 */
+export interface SessionSink {
+  append(event: SessionEvent): void
+}
+
+/**
+ * 把一份挂起的活动诚实地收尾：还没等到结果的 tool/call，补写一条 isError 的 tool/result
+ * （不是伪造一个成功结果），再补 step/end，最后写 turn/end。用在两个场景：
+ * 1. `Agent.drain()` 里一个 turn 异常终止（取消/预算耗尽/错误）的收尾。
+ * 2. 从持久化恢复一份日志时，发现末尾挂着一个没关闭的 turn（进程就是在那个点被杀掉的）。
+ *
+ * 可选的 `sink`：这几条收尾事件跟 `Session.append()` 走的是同一个方法，但如果调用方
+ * 是通过某个包装了 sink 转发的入口（比如 `Agent.appendEvent()`）在别处写事件，这里
+ * 自己直接调 `session.append()` 就会绕开那层转发——这是我们在集成测试里真实踩到的坑：
+ * 第一版没有这个参数，导致收尾产生的 `turn/end` 被记进了内存里的 Session，却没有被
+ * 镜像写进持久化 store，两边从这一条开始就不一致了。传了 `sink` 就不会漏。
+ */
+export function closeDanglingActivity(session: Session, reason: TurnEndReason, sink?: SessionSink): void {
+  const dangling = session.danglingActivity()
+  if (!dangling) return
+  const { turn, step, pendingCallIds } = dangling
+  const append = <K extends SessionEventType>(type: K, data: SessionEventPayloadMap[K]): void => {
+    const event = session.append(type, data)
+    sink?.append(event)
+  }
+  if (step !== undefined) {
+    for (const callId of pendingCallIds) {
+      append('tool/result', { turn, step, callId, content: 'turn ended before this call produced a result', isError: true })
+    }
+    append('step/end', { turn, step })
+  }
+  append('turn/end', { turn, reason })
 }
 
 /**

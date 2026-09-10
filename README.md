@@ -38,8 +38,9 @@ agent-study/
 | 6 | 生命周期、取消与并发 | [modules/day06-lifecycle-and-cancellation/](modules/day06-lifecycle-and-cancellation/) |
 | 7 | 里程碑一：可测试的单 Agent CLI | [modules/day07-milestone-cli/](modules/day07-milestone-cli/) |
 | 8 | 仅追加事件日志与真源 | [modules/day08-session-event-log/](modules/day08-session-event-log/) |
+| 9 | 持久化、flush 与崩溃恢复 | [modules/day09-persistence-and-crash-recovery/](modules/day09-persistence-and-crash-recovery/) |
 
-跑完 Day1-7，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词>`），加上后续陆续补的练习题，现在共 207 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
+跑完 Day1-7，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词>`），加上后续陆续补的练习题和 Day8-9，现在共 233 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
 
 阶段一验证下来讲解风格没问题的话，会继续把 Day8-30 按同样的方式（研究提炼 + 白话讲解 + 代码 + 测试）做完。**下面是尚未做成白话教材的后续阶段大纲，作为路线图参考**，如果你想提前预习，仍然可以按原始大纲里的官方文档链接去读——但建议先等对应模块出来。
 
