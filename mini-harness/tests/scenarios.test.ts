@@ -49,6 +49,22 @@ class ScriptedAdapter extends LlmAdapter {
   }
 }
 
+/** 跟 ScriptedAdapter 一样按顺序重放文本回答，但额外记下每次收到的完整请求——用来断言
+ * "新一轮 turn 的请求里有没有带上更早那轮的历史"，而不仅仅是这一轮的新问题。 */
+class RecordingAdapter extends LlmAdapter {
+  private call = 0
+  readonly calls: GenerateOptions[] = []
+  constructor(private readonly script: readonly Message[]) {
+    super()
+  }
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    const message = this.script[Math.min(this.call, this.script.length - 1)]!
+    this.call += 1
+    yield* streamFake({ message, finishReason: { kind: 'stop' } })
+  }
+}
+
 class FlakyAdapter extends LlmAdapter {
   private calls = 0
   constructor(
@@ -359,5 +375,36 @@ describe('Scenario 19-20: cross-day regression guards', () => {
     const toolResults = agent.records[0]!.events.filter((e) => e.type === 'tool-result')
     expect(toolResults).toHaveLength(2)
     expect(agent.records[0]!.stopReason).toEqual({ kind: 'completed' })
+  })
+})
+
+describe('Scenario 21: multi-turn conversations carry earlier turns into later requests', () => {
+  it("21. the second send() turn's request to the model includes the first turn's full exchange, not just the new question", async () => {
+    const tools = new ToolRegistry()
+    for (const t of createReadOnlyFsTools(workspaceRoot)) tools.define(t)
+    const adapter = new RecordingAdapter([assistantText('auth uses JWT'), assistantText('payments uses Stripe')])
+    const agent = new Agent({ adapter, tools, provider: 'fake', model: 'x' })
+
+    const firstUser = userText('what is the auth mechanism?')
+    agent.send(firstUser)
+    await agent.whenIdle()
+
+    const secondUser = userText('and what about payments?')
+    agent.send(secondUser)
+    await agent.whenIdle()
+
+    expect(adapter.calls).toHaveLength(2)
+    // 第二轮发给模型的请求里必须带着第一轮完整的问答，而不是只带这一轮的新问题——
+    // 这才是"会话记忆连续"真正被验证的地方，不是只看 agent.history 的长度。
+    expect(adapter.calls[1]!.messages).toContainEqual(firstUser)
+    expect(adapter.calls[1]!.messages).toContainEqual(assistantText('auth uses JWT'))
+    expect(adapter.calls[1]!.messages).toContainEqual(secondUser)
+
+    // 反过来也要成立：第一轮的请求不可能提前看到第二轮还没发生的问题。
+    expect(adapter.calls[0]!.messages).not.toContainEqual(secondUser)
+
+    expect(agent.history).toHaveLength(4) // user1, assistant1, user2, assistant2
+    expect(agent.records).toHaveLength(2)
+    expect(agent.records.every((r) => r.stopReason.kind === 'completed')).toBe(true)
   })
 })
