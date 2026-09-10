@@ -273,10 +273,26 @@ describe('Agent: dispose', () => {
     expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
     expect(agent.status).toBe('idle')
   })
+
+  it('status stays "running" until the dispose() promise itself resolves, not before', async () => {
+    const adapter = new GatedAdapter()
+    const agent = newAgent(adapter)
+    agent.send(userText('hi'))
+    await adapter.started
+
+    const disposePromise = agent.dispose()
+    // Checked synchronously, before awaiting disposePromise: dispose() has only run up to its
+    // own first await (`await this.runLoopPromise`) at this point -- drain() hasn't had a chance
+    // to observe the abort and actually unwind yet.
+    expect(agent.status).toBe('running')
+
+    await disposePromise
+    expect(agent.status).toBe('idle')
+  })
 })
 
 describe('Agent: repeated cancel/send races produce no dangling state', () => {
-  it('runs 100 rounds of racing cancel() against send() without duplicate or missing terminal records', async () => {
+  it('pattern 1 — send() immediately followed by cancel(): 100 rounds, no duplicate or missing terminal records', async () => {
     for (let i = 0; i < 100; i++) {
       const adapter = new InstantAdapter()
       const agent = newAgent(adapter)
@@ -288,6 +304,44 @@ describe('Agent: repeated cancel/send races produce no dangling state', () => {
       await agent.whenIdle()
       expect(agent.status).toBe('idle')
       expect(agent.records.length).toBeLessThanOrEqual(1)
+      await agent.dispose()
+    }
+  })
+
+  it('pattern 2 — cancel() after adapter.started: 100 rounds, guaranteed to land on a genuinely in-flight turn', async () => {
+    for (let i = 0; i < 100; i++) {
+      const adapter = new GatedAdapter()
+      const agent = newAgent(adapter)
+      agent.send(userText(`race-${i}`))
+      // Unlike pattern 1, this is not racy: `started` only resolves once the adapter's request
+      // body has actually begun (Day6 study.md's GatedAdapter note), so cancel() here always
+      // hits a real in-flight activity, never a not-yet-started or already-finished one.
+      await adapter.started
+      agent.cancel({ kind: 'user' })
+      await agent.whenIdle()
+      expect(agent.status).toBe('idle')
+      expect(agent.records).toHaveLength(1)
+      expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
+      expect(agent.records[0]!.cancelCause).toEqual({ kind: 'user' })
+      await agent.dispose()
+    }
+  })
+
+  it('pattern 3 — cancel() immediately followed by send(): 100 rounds, cancelling nothing must not poison the next turn', async () => {
+    for (let i = 0; i < 100; i++) {
+      const adapter = new InstantAdapter()
+      const agent = newAgent(adapter)
+      // Nothing is running yet, so this cancel() has nothing to cancel -- it must be a harmless
+      // no-op (this exercises `currentCancelCause` getting reset at the top of drain()'s loop,
+      // not leaking a stale cause from before any turn ever started onto the turn send() is
+      // about to queue).
+      agent.cancel({ kind: 'user' })
+      agent.send(userText(`race-${i}`))
+      await agent.whenIdle()
+      expect(agent.status).toBe('idle')
+      expect(agent.records).toHaveLength(1)
+      expect(agent.records[0]!.stopReason).toEqual({ kind: 'completed' })
+      expect(agent.records[0]!.cancelCause).toBeUndefined()
       await agent.dispose()
     }
   })

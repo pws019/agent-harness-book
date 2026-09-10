@@ -227,6 +227,76 @@ AgentCancelCause（Day6 定义：user/parent/hook/disposed）
 
 **怎么用这张图**：以后遇到一个陌生类型（比如 `ToolResultBlock`），先别慌，问自己两个问题——"这个类型是哪天定义的？"（决定去哪个 study.md 找它的设计意图），"它最终被装进了哪个更高层类型的哪个字段？"（决定它在整条链路里扮演什么角色）。四条主线基本覆盖了 Day1-7 所有跨天复用的类型；一个类型如果不在这四条线上，大概率是某一天内部的实现细节，不需要跨天追。
 
+## 类图：这几天定义的类，各自负责什么
+
+前两张图讲"谁调用谁"和"类型怎么嵌套"；这张图换个角度——**Day1-7 里真正称得上"类"（有内部状态、有方法，不只是数据形状）的其实只有四个**，其余全是没有行为的纯数据类型（interface/联合类型）。先看清楚这四个类各自的职责边界,再回头看之前两张图会更有体感。
+
+```mermaid
+classDiagram
+  class BlockAssembler {
+    <<Day2>>
+    -Map~number,OpenBlock~ open
+    -Map~number,ContentBlock~ closedBlocks
+    +push(chunk: StreamChunk) void
+    +result() AssembledResult
+    +interruptedBlocks() ContentBlock[]
+  }
+  note for BlockAssembler "职责：把散乱到达的 StreamChunk 折叠成完整 ContentBlock[]。\n一次性对象——每次 provider attempt 都 new 一个新的用完即扔。"
+
+  class LlmAdapter {
+    <<abstract, Day3>>
+    +stream(options: GenerateOptions) AsyncIterable~StreamChunk~
+  }
+  note for LlmAdapter "职责：把某一家 provider 的 wire 协议翻译成统一的 StreamChunk。\n唯一必须实现的方法只有一个——深模块的典型例子。"
+
+  class AdapterRegistry {
+    <<Day3>>
+    -Map~string,LlmAdapter~ adapters
+    +register(providers, adapter) Disposer
+    +resolve(provider: string) LlmAdapter
+  }
+  note for AdapterRegistry "职责：provider 字符串 -> 适配器实例 的查表，\n注册冲突时原子失败（要么全成功要么全不注册）。"
+
+  class ToolRegistry {
+    <<Day4>>
+    -Map~string,ToolDefinition~ tools
+    +define(tool: ToolDefinition) void
+    +schemas() ToolSchema[]
+    +execute(name, args, exec) Promise~ToolResult~
+  }
+  note for ToolRegistry "职责：统一的工具执行管线——参数校验→取消检查→\n超时/取消赛跑→execute()→render()，工具作者只写 execute()。"
+
+  class Agent {
+    <<Day6>>
+    +Message[] history
+    +TurnRecord[] records
+    -Message[] nextTurnQueue
+    -Message[] nextStepQueue
+    -AbortController controller
+    -Promise~void~ runLoopPromise
+    +send(message: Message) void
+    +steer(message: Message) void
+    +cancel(cause: AgentCancelCause) void
+    +whenIdle() Promise~void~
+    +dispose() Promise~void~
+    -drain() Promise~void~
+    -wake() void
+  }
+  note for Agent "职责：管理 turn 的排队（单 writer）、取消传播、幂等释放。\n不知道 provider 是谁、工具怎么执行——只持有 adapter/tools 的引用转发下去。"
+
+  AdapterRegistry "1" o-- "*" LlmAdapter : 按 provider 名查表持有
+  Agent "1" *-- "1" LlmAdapter : deps.adapter（转发给 runTurn）
+  Agent "1" *-- "1" ToolRegistry : deps.tools（转发给 runTurn）
+  LlmAdapter ..> BlockAssembler : generateWithRetry 每次 attempt\n用一个新实例组装它吐出的流
+```
+
+**几个容易忽略但重要的边界**：
+
+- **`runTurn()` 本身不是类，是一个独立的 async generator 函数**（Day5）——它不持有任何跨调用的状态,每次调用都是全新的一次执行,状态全部通过参数（`history`）和局部变量（`step`/`toolCallCount`）传递。这也是为什么图里没有一个叫 `RunTurn` 的类：它是纯粹的"过程"，不是"对象"。`Agent.drain()` 每处理一条排队消息就调用它一次。
+- **`Agent` 不认识 `BlockAssembler`**，两者中间隔着 `LlmAdapter`/`generateWithRetry` 这一层——`Agent` 只知道"我有一个 `adapter`，它能 `stream()`"，组装流水线的细节完全被 `LlmAdapter` 这个抽象挡住了，这正是 Day3 study.md 第1节"Agent loop 不该认识任何具体 SDK 类型"的字面体现，`BlockAssembler` 同样不该被 `Agent` 认识。
+- **`ToolRegistry` 和 `AdapterRegistry` 长得像双胞胎**（都是"字符串 → 具体实现"的查表），但服务对象不同：一个查的是"这次调用该用哪个工具"，一个查的是"这次请求该用哪个 provider"——这不是巧合，是同一种设计模式（把"选哪个具体实现"的判断，从调用方那里收进一个专门的注册表）在两个不同场景里的复用。
+- **四个类里，只有 `Agent` 有跨调用保留的可变状态**（`history`/`records`/`nextTurnQueue` 这些字段会在多次方法调用之间累积）。`BlockAssembler` 是一次性用品，`AdapterRegistry`/`ToolRegistry` 注册之后基本是只读查表——**状态越多的类，需要操心的并发/生命周期问题就越多**，这也是为什么 Day6（专门讲生命周期、取消、并发）刚好是 `Agent` 这个"全场唯一有状态的类"登场的那一天，不是时间安排上的巧合。
+
 ## 贯穿全程的几条设计主线（不属于任何单独一天，是反复出现的思想）
 
 这几条不是某一天的知识点，是从 Day2 到 Day6 反复出现、每次以不同形式印证的同一批原则——读代码时如果感觉"这个设计怎么又出现了"，大概率就是撞上了下面某一条：
