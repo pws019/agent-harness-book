@@ -92,7 +92,13 @@ export class Agent {
 
 我们 `Agent.drain()` 的实现完全体现了这一点：`nextTurnQueue` 是一个数组，`send()` 只是 `push` 进去，再调用内部的 `wake()`——`wake()` 检查 `runLoopPromise`：如果 driver 已经在跑（有值），什么都不做，`drain()` 内部的 `while` 循环下一轮自然会捡到新塞进去的消息；如果 driver 是空闲的（`undefined`，说明上一次 `drain()` 已经跑完退出了），才需要真正"唤醒"——重新调用 `this.drain()` 把循环跑起来，并把返回的 `Promise` 存回 `runLoopPromise`。真正处理消息的 `drain()` 循环是**顺序**从队列里 `shift()` 的，永远不会有两个 turn 同时在跑。
 
-DSH 原文里还有 `steer`（追上正在跑的活动，插一句话，但要等到下一个 step 边界才生效）和 `inject`（不唤醒 driver，纯粹等下一个 step 边界被采纳的上下文）——我们 MiniHarness 今天**没有实现**这两个，只实现了 `send()`（对应 DSH 的 `followup`）。原因很直接：`steer`/`inject` 需要在 `runTurn` 内部的 step 边界暴露一个"检查有没有新插入内容"的钩子，这会让 Day5 写好的 loop 骨架变复杂，而我们还没有真正需要 steer 的场景（那通常是给"用户在 Agent 思考过程中插一句补充说明"这种交互式场景用的）。这是 YAGNI 原则的实践：**没有真实调用方需要它之前，不提前搭这个抽象**。exercise.md 里留了这个作为进阶练习。
+DSH 原文里还有 `steer`（追上正在跑的活动，插一句话，但要等到下一个 step 边界才生效）和 `inject`（不唤醒 driver，纯粹等下一个 step 边界被采纳的上下文）。我们 MiniHarness 最初没有实现这两个，只实现了 `send()`（对应 DSH 的 `followup`）——原因是 YAGNI：`steer`/`inject` 需要在 `runTurn` 内部的 step 边界暴露一个"检查有没有新插入内容"的钩子，会让 Day5 写好的 loop 骨架变复杂，而当时还没有真正需要它的场景。exercise.md 任务2 把 `steer()` 补齐了，实现思路：
+
+- `Agent` 新增 `private readonly nextStepQueue: Message[]` 和 `steer(message)`——只是 `push`，**不调用 `wake()`**（这是它跟 `send()` 唯一的结构性区别：`send()` 既排队又负责唤醒空闲的 driver，`steer()` 假定 driver 已经在跑，只负责排队；如果 driver 是空闲的，光靠 `steer()` 不会让它跑起来）。
+- `AgentLoopOptions` 新增 `pollSteering?: () => readonly Message[]`，`runTurn()` 在每个 step **刚开始**（`yield step-start` 之后、请求模型之前）调用它一次，取出的消息直接 `history.push()`。
+- `drain()` 把 `pollSteering: () => this.nextStepQueue.splice(0, this.nextStepQueue.length)` 传给 `runTurn()`——`splice` 既取出了消息，也顺手清空了队列，不会重复消费。
+
+**为什么插入的消息只能在下一个 step 生效，不能是当前 step**：因为当前 step 的请求这时候可能已经真的发出去了——回忆 Day3："一次模型请求必须可重建"、`generateWithRetry` 会把请求深度冻结再发出，一次 HTTP/流式请求一旦建立连接，你没有办法往里面追加内容（不存在"往一个已经在传输中的请求里插一句话"这种操作）。所以"下一个 step"不是一个随意的设计选择,而是**唯一有意义的注入时机**——它是"确定还没有请求被发出去"的第一个安全点。反过来想,如果允许插入当前 step,你就得回答一个没有好答案的问题："如果请求已经发出去了怎么办？"
 
 ## 4. 取消不是布尔值
 

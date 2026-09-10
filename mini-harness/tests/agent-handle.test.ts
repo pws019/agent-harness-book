@@ -4,6 +4,26 @@ import { LlmAdapter, LlmError, type GenerateOptions } from '../src/llm/adapter.j
 import { streamFake } from '../src/llm/fake-adapter.js'
 import type { Message, StreamChunk } from '../src/llm/types.js'
 import { ToolRegistry } from '../src/tools/registry.js'
+import type { ToolDefinition } from '../src/tools/types.js'
+
+function echoTool(): ToolDefinition<string> {
+  return {
+    name: 'echo',
+    description: 'returns whatever text argument it was given',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['text'],
+      properties: { text: { type: 'string' } },
+    },
+    output: { schema: { type: 'string' }, render: (_args, value) => value },
+    timeoutMs: 1_000,
+    isConcurrencySafe: () => true,
+    async execute(args) {
+      return (args as { text: string }).text
+    },
+  }
+}
 
 function userText(text: string): Message {
   return { role: 'user', blocks: [{ type: 'text', text }] }
@@ -38,6 +58,8 @@ class GatedAdapter extends LlmAdapter {
     this.startedResolve = resolve
   })
   callCount = 0
+  /** 每次 stream() 被调用时，实际收到的完整请求——用来断言"下一个 step 的历史里有没有引导消息"。 */
+  readonly calls: GenerateOptions[] = []
 
   open(): void {
     this.release?.()
@@ -45,6 +67,7 @@ class GatedAdapter extends LlmAdapter {
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.callCount += 1
+    this.calls.push(options)
     this.startedResolve?.()
     await new Promise<void>((resolve, reject) => {
       this.gate.then(resolve)
@@ -55,6 +78,42 @@ class GatedAdapter extends LlmAdapter {
       )
     })
     yield* streamFake({ message: assistantText('too late'), finishReason: { kind: 'stop' } })
+  }
+}
+
+/**
+ * Like `GatedAdapter`, but the first call is gated and requests a tool call (forcing a real
+ * step 2) instead of finishing the turn outright -- steer() needs a "next step" to actually
+ * land in, and a turn that completes after one step never gets one.
+ */
+class GatedThenToolCallAdapter extends LlmAdapter {
+  private release: (() => void) | undefined
+  private readonly gate = new Promise<void>((resolve) => {
+    this.release = resolve
+  })
+  private startedResolve: (() => void) | undefined
+  readonly started = new Promise<void>((resolve) => {
+    this.startedResolve = resolve
+  })
+  readonly calls: GenerateOptions[] = []
+
+  open(): void {
+    this.release?.()
+  }
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    this.calls.push(options)
+    if (this.calls.length === 1) {
+      this.startedResolve?.()
+      await this.gate
+      const message: Message = {
+        role: 'assistant',
+        blocks: [{ type: 'tool-call', id: 'c1', name: 'echo', arguments: JSON.stringify({ text: 'x' }) }],
+      }
+      yield* streamFake({ message, finishReason: { kind: 'tool-calls' } })
+      return
+    }
+    yield* streamFake({ message: assistantText('done'), finishReason: { kind: 'stop' } })
   }
 }
 
@@ -156,6 +215,39 @@ describe('Agent: cancellation', () => {
     expect(agent.records).toHaveLength(2)
     expect(agent.records[0]!.stopReason).toEqual({ kind: 'cancelled' })
     expect(agent.records[1]!.stopReason).toEqual({ kind: 'completed' })
+  })
+})
+
+describe('Agent: steer()', () => {
+  it('lands in the next step, not the one already in flight', async () => {
+    const adapter = new GatedThenToolCallAdapter()
+    const registry = new ToolRegistry()
+    registry.define(echoTool())
+    const agent = new Agent({ adapter, tools: registry, provider: 'fake', model: 'x' })
+    const steered = userText('steered: focus on the auth module')
+
+    agent.send(userText('go'))
+    await adapter.started // step 1's request is already dispatched and in flight
+
+    agent.steer(steered)
+    adapter.open() // let step 1 finish; it requests a tool call, forcing a real step 2
+
+    await agent.whenIdle()
+
+    expect(adapter.calls).toHaveLength(2)
+    expect(adapter.calls[0]!.messages).not.toContainEqual(steered) // step 1: already sent, too late
+    expect(adapter.calls[1]!.messages).toContainEqual(steered) // step 2: picked up at the boundary
+    expect(agent.records[0]!.stopReason).toEqual({ kind: 'completed' })
+  })
+
+  it('does not wake an idle driver by itself', () => {
+    const adapter = new InstantAdapter()
+    const agent = newAgent(adapter)
+
+    agent.steer(userText('nobody is listening yet'))
+
+    expect(agent.status).toBe('idle')
+    expect(adapter.callCount).toBe(0)
   })
 })
 

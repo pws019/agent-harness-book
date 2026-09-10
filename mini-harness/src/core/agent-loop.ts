@@ -29,6 +29,13 @@ export interface AgentLoopOptions {
   readonly signal?: AbortSignal
   readonly retryPolicy?: RetryPolicy
   readonly retryRuntime?: GenerateRuntime
+  /**
+   * 在每个 step 开头调用一次，取出这段时间外部通过 steer() 排队的引导消息并追加进历史。
+   * 只在 step 边界生效：如果调用方在某个 step 正跑到一半时 steer() 了一条消息，这条消息
+   * 不会影响这一步已经发出去的请求（Day3 的深冻结请求本来就没法被事后修改），只会在下一个
+   * step 开头才被这里取出、追加进历史，参见 study.md 第3节。
+   */
+  readonly pollSteering?: () => readonly Message[]
 }
 
 export interface AgentLoopDeps {
@@ -84,6 +91,10 @@ export async function* runTurn(
     }
 
     yield { type: 'step-start', step }
+
+    for (const steered of options.pollSteering?.() ?? []) {
+      history.push(steered)
+    }
 
     const result = await generateWithRetry(
       deps.adapter,

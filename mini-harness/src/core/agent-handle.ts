@@ -38,15 +38,16 @@ export interface TurnRecord {
  * 刻意简化（相对 DSH 的完整 AgentRegistry/AgentHandle 双层所有权模型）：
  * - 没有独立的"注册表 + 结构性所有者"两层所有权，只有一个持有者概念——谁拿到这个
  *   Agent 实例，谁负责调用 dispose()。
- * - 没有实现 steer()/inject()（在下一个 step 边界插入引导消息）——只实现了
- *   send()（对应 DSH 的 followup：排队一个新 turn）。study.md 里会讲为什么，
- *   exercise.md 里留了这个作为进阶练习。
+ * - 没有实现 inject()（不唤醒 driver、纯粹等下一个 step 边界被采纳的上下文）——只实现了
+ *   send()（对应 DSH 的 followup）和 steer()（对应 DSH 的 followup 之外那种"追上正在跑的
+ *   活动"的引导消息，在下一个 step 边界生效，不打断当前 step 已经发出去的请求）。
  */
 export class Agent {
   readonly history: Message[] = []
   readonly records: TurnRecord[] = []
 
   private readonly nextTurnQueue: Message[] = []
+  private readonly nextStepQueue: Message[] = []
   private controller: AbortController | undefined
   private currentCancelCause: AgentCancelCause | undefined
   private idleWaiters: Array<() => void> = []
@@ -64,6 +65,17 @@ export class Agent {
     this.assertNotDisposed()
     this.nextTurnQueue.push(message)
     this.wake()
+  }
+
+  /**
+   * 追上正在跑的活动，插一条引导消息——不像 send() 那样开一个新 turn，而是让这条消息在
+   * 当前 turn 的下一个 step 开头被采纳进历史。如果当前没有 turn 在跑，这条消息会在下一次
+   * `send()` 触发的 turn 的第一个 step 就被采纳。不唤醒 driver：如果 driver 是空闲的，
+   * 单靠 steer() 不会让它跑起来，需要配合 send() 才有意义。
+   */
+  steer(message: Message): void {
+    this.assertNotDisposed()
+    this.nextStepQueue.push(message)
   }
 
   /**
@@ -134,7 +146,11 @@ export class Agent {
           model: this.deps.model,
           system: this.deps.system,
         },
-        { ...this.deps.loopOptions, signal: this.controller.signal },
+        {
+          ...this.deps.loopOptions,
+          signal: this.controller.signal,
+          pollSteering: () => this.nextStepQueue.splice(0, this.nextStepQueue.length),
+        },
       )
 
       let step = await generator.next()
