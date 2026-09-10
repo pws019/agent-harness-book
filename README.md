@@ -23,7 +23,7 @@ agent-study/
 
 **推荐阅读顺序**：先扫一眼 [modules/day00-phase1-overview/](modules/day00-phase1-overview/)（阶段一全貌地图，不含练习，现在看不懂大部分术语是正常的），再打开 `modules/day01-.../README.md` 跟着往下走。每天：先读 `study.md` 建立心智模型 → 看 `mini-harness/` 里对应的代码 → 做 `exercise.md` 的练习 → 跑 `pnpm test` 验证。学到中途觉得"看细节看到出不来"的时候，随时回 Day0 那张地图对一遍——这正是它存在的目的。
 
-**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day07`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
+**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day10`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
 
 ## 目前进度：阶段一已完成（Day1-7），阶段二进行中（Day8 起）
 
@@ -39,8 +39,9 @@ agent-study/
 | 7 | 里程碑一：可测试的单 Agent CLI | [modules/day07-milestone-cli/](modules/day07-milestone-cli/) |
 | 8 | 仅追加事件日志与真源 | [modules/day08-session-event-log/](modules/day08-session-event-log/) |
 | 9 | 持久化、flush 与崩溃恢复 | [modules/day09-persistence-and-crash-recovery/](modules/day09-persistence-and-crash-recovery/) |
+| 10 | 投影、查询、标题与 Spill | [modules/day10-projection-query-spill/](modules/day10-projection-query-spill/) |
 
-跑完 Day1-7，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词>`），加上后续陆续补的练习题和 Day8-9，现在共 233 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
+跑完 Day1-7，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词>`），加上后续陆续补的练习题和 Day8-10，现在共 245 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
 
 阶段一验证下来讲解风格没问题的话，会继续把 Day8-30 按同样的方式（研究提炼 + 白话讲解 + 代码 + 测试）做完。**下面是尚未做成白话教材的后续阶段大纲，作为路线图参考**，如果你想提前预习，仍然可以按原始大纲里的官方文档链接去读——但建议先等对应模块出来。
 

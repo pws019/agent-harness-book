@@ -87,3 +87,12 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - **修了一个真实 bug**：`closeDanglingActivity` 第一版直接调 `session.append()`，绕开了 `Agent.appendEvent()` 那层"顺手转发给 sink"的包装，导致收尾产生的事件（尤其是每个 turn 都会有的那条 `turn/end`）只进了内存里的 Session，没有镜像进持久化 store——集成测试一跑，`agent.sessionEvents` 和 `store.load().events` 对不上。修复：给 `closeDanglingActivity` 加一个可选 `sink` 参数。细节见 `modules/day09-persistence-and-crash-recovery/study.md` 第4节。
 
 至此 `pnpm test` 共 233 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day10：投影、查询、标题与 Spill
+
+新增：
+- `src/core/session-projection.ts` —— `projectSummary(events)`（turn 数、按名字统计的工具调用次数、最后一次结束原因）、`queryEvents(events, {afterSeq, limit})`（按 seq 游标分页，不用数组下标）、`deriveTitle(events)`（摘第一条 user/message 当标题，记录来源 seq）。三个都是跟 `deriveMessages` 平级的纯函数，只挑自己关心的事件类型。
+- `src/core/spill.ts` —— `SpillStore`/`InMemorySpillStore`、`spillLargeToolResults(events, store, maxContentLength)`：把超阈值的 `tool/result.content` 搬进 store，原地换成占位引用文本。跟 Day4 `search_text` 的截断策略解决同一类问题，但换了"引用/内容分离"而不是"截断丢弃"的手法；刻意做成独立的日志变换函数，没有实时接进 `Agent`（YAGNI）。
+- `tests/session-projection.test.ts`（7条）、`tests/spill.test.ts`（5条）。
+
+至此 `pnpm test` 共 245 条测试全绿，`pnpm typecheck` 无错误。
