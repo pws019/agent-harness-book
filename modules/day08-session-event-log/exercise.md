@@ -18,7 +18,9 @@
 
 `tests/session.test.ts` 里 `deriveMessages` 的测试目前没覆盖"一个 turn 中途被取消，只跑了一半"这种情况——比如：`turn/start` → `step/start` → `user/message` → 直接 `turn/end({kind:'cancelled'})`，中间没有任何 `assistant/message`。
 
-写一条测试验证：这种情况下 `deriveMessages()` 应该只返回那条 `user/message` 对应的消息，不会因为缺少配对的 `assistant/message` 而抛异常或者返回奇怪的结果。
+**注意**：这个序列**没法**通过顺序调用 `session.append()` 产生出来——`step/start` 之后 `step` 还开着，直接 `turn/end` 会被 `checkInvariant()` 拒绝（"while step 1 is still open"），你会先撞上 `SessionAppendError`，走不到 `deriveMessages()` 那一步。这是有意的：真正要测的不是"`Session` 会不会走到这个状态"（它永远不会自己走到——这正是 Day9 `closeDanglingActivity` 存在的原因，它会先补 `step/end` 再写 `turn/end`），而是"`deriveMessages()` 自己完全不做校验，只信任传给它的输入"这个设计事实。所以任务是：**不经过 `session.append()`，直接手写一个 `SessionEvent[]` 数组字面量**（自己填 `seq`/`time`），包含这个"不完整"的序列，直接调用 `deriveMessages(events)`。
+
+写一条测试验证：给定这样一份手写的事件数组，`deriveMessages()` 应该只返回那条 `user/message` 对应的消息，不会因为缺少配对的 `assistant/message`、也不会因为这份数据"不可能被 `Session` 自己合法生成"而抛异常或者返回奇怪的结果。
 
 ## 任务 4（进阶，为 Day9 预习，不强制）
 

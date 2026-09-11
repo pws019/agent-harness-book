@@ -115,6 +115,8 @@ export class Session {
   private openTurn: number | undefined
   private openStep: OpenStep | undefined
   private openCompaction: { readonly fromSeq: number; readonly toSeq: number } | undefined
+  /** 见过的最大 turn 编号——只用来校验"严格递增"，跟 openTurn（当前开着哪个 turn）是两件事。 */
+  private lastTurnNumber: number | undefined
 
   constructor(options: { readonly clock?: () => number } = {}) {
     this.clock = options.clock ?? Date.now
@@ -171,6 +173,10 @@ export class Session {
         if (this.openTurn !== undefined) {
           throw new SessionAppendError(`turn/start(${turn}) while turn ${this.openTurn} is still open`)
         }
+        if (this.lastTurnNumber !== undefined && turn <= this.lastTurnNumber) {
+          throw new SessionAppendError(`turn/start(${turn}) must be strictly greater than the last turn number (${this.lastTurnNumber})`)
+        }
+        this.lastTurnNumber = turn
         this.openTurn = turn
         return
       }

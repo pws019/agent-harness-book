@@ -134,6 +134,27 @@ describe('Session.append: turn/step/tool-call pairing invariants', () => {
     ).toThrow(SessionAppendError)
   })
 
+  it('accepts strictly increasing turn numbers across successive (closed) turns', () => {
+    const session = new Session()
+    expect(() => {
+      session.append('turn/start', { turn: 0 })
+      session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+      session.append('turn/start', { turn: 1 })
+      session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      session.append('turn/start', { turn: 5 }) // 允许跳号，只要求"严格更大"，不要求连续
+      session.append('turn/end', { turn: 5, reason: { kind: 'completed' } })
+    }).not.toThrow()
+  })
+
+  it('rejects reusing a turn number that is less than or equal to a previously used one', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 2 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+
+    expect(() => session.append('turn/start', { turn: 2 })).toThrow(SessionAppendError) // 相等
+    expect(() => session.append('turn/start', { turn: 1 })).toThrow(SessionAppendError) // 更小
+  })
+
   it('accepts a fully well-formed turn: one step, one tool call, clean close', () => {
     const session = new Session()
     expect(() => {
