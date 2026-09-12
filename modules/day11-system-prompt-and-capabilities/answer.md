@@ -1,6 +1,6 @@
 # Day 11 答案
 
-> 对照 [README.md](./README.md)「今天要学会什么」和 [exercise.md](./exercise.md)「验收自查」逐条作答。
+> 对照 [README.md](./README.md)「今天要学会什么」、[exercise.md](./exercise.md)「验收自查」和其中的思考题逐条作答。
 
 ## 今天要学会什么
 
@@ -19,3 +19,11 @@
 ## 验收自查
 
 **为什么 `system/message` 存的是渲染后的字符串，而不是原始分段对象**：不是"反正只是审计用的所以无所谓"——恰恰相反，正因为它要审计的是历史事实，才必须存这份事实本身。`buildSystemPrompt()` 今天是纯函数，同样的分段今天调用结果固定，但这不保证以后也一样——如果哪天这个函数的实现改了（调整了某个分段的格式、加了新分段），拿旧的原始分段去跑新版的 `buildSystemPrompt()`，会算出一个当初根本没有真正发给过模型的字符串。存渲染后的字符串，是把"模型这一步实际看到的文本"这个既成事实原样冻结下来——事实不会因为以后改代码而改变，"如何重建这份事实的配方"会。这是 Day1/Day2"会话日志是唯一真源，模型可见即已记录"这条原则的又一次应用：日志要记发生过的事实，不是可以重新计算、因而可能跟历史事实脱钩的中间数据。
+
+## exercise.md 任务3思考题：现在的设计够不够审计"哪个分段变了"
+
+**现在的设计不够用**——`system/message.message` 只存渲染后的字符串,想审计"这次跟上次相比,到底是 `identity`/`workspaceRoot`/`tools`/`taskContext` 里哪个分段变了",单看字符串答不出来（顶多能靠字符串 diff 猜,猜不准哪部分对应哪个分段）。
+
+**要加的字段**：往 `system/message` 的 payload 里加一份原始分段 `sections: SystemPromptSections`，跟渲染后的字符串一起存——不是取代字符串（上一条已经论证过字符串这份"事实"不能丢），是**在事实之外再多存一份用于审计的结构化原料**，两者各司其职：字符串回答"模型当时到底看到了什么"，原始分段回答"这次为什么会渲染出这个字符串、跟上次比哪部分变了"。
+
+**`isJsonValue` 会带来的新限制**：`SystemPromptSections.tools: ToolSchema[]` 本身（`{name, description, parameters: JsonSchema}` 递归下去全是字符串/数组/嵌套对象）能通过 `isJsonValue` 校验，这点不是问题。真正的坑在于 `SystemPromptSections` 好几个字段是可选的（`taskContext?`、`policies?`）——如果构造这个对象时用了类似 `{ ...sections, taskContext: options.taskContext }` 这种写法，而 `options.taskContext` 恰好是 `undefined`，产生的对象会是"**键存在、值是 `undefined`**"，`isJsonValue` 遍历 `Object.values()` 会直接判定失败，整条 `Session.append()` 抛 `SessionAppendError`——这正是 Day8/Day12 反复出现的"键不存在 vs 键存在但值 undefined"那条规则，往 `system/message` 塞新字段时要用条件展开小心构造，不能直接对象字面量。

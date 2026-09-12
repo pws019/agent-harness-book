@@ -53,6 +53,14 @@ if (options.maxTokens !== undefined) {
 
 **这不是唯一正确答案**——如果你的场景是"provider 偶尔不报用量是家常便饭，不该动不动就打断任务"，fail-open 也是合理的选择,只是需要额外的机制去补偿"预算可能被低估"的风险。今天选 fail-closed，是因为"控制成本"这个目标本身就应该偏保守。
 
+## 2.5 已知简化：`maxTokens` 目前只管一个 turn，不管一次会话、更不管一个账号
+
+`tokenMeter`（[agent-loop.ts:84](../../mini-harness/src/core/agent-loop.ts#L84)）是 `runTurn()` 函数体内的局部变量，每次调用都 `new` 一个全新实例——`maxTokens` 检查的是"这一个 turn 累计花了多少"，turn 一结束这份累计就清零，不会带到下一个 turn。
+
+DSH 原始大纲里对 Day12 的要求其实是"建立单请求/单 turn/单 session **三层**预算"——我们只做了前两层（单请求靠 `TokenMeter.record()` 逐次累加，单 turn 靠这里的 `maxTokens` 检查），"单 session 累计"和更粗的"单账号累计"都没有实现。这是**刻意的简化，不是遗漏**：本课程是单用户单会话的学习项目，没有真实的多租户/控成本场景需要更粗粒度的预算兜底，提前搭这层复杂度只会增加认知负担却用不上——跟 Day6 不实现 `steer`/`inject`、Day9 Spill 不自动接进 `Agent.appendEvent()` 是同一类判断（YAGNI）。
+
+**如果要升级到 `Agent` 层做会话级预算，大致方向是**：把 `TokenMeter` 的持有者从 `runTurn()` 内部的局部变量，提升成 `Agent` 类的一个实例字段（类似 `history`/`records`），每次 `drain()` 调 `runTurn()` 时传入这个共享实例而不是让 `runTurn()` 自己 `new` 一个；`maxTokens` 检查也要跟着变成两层——"这个 turn 花了多少"（沿用现在的逻辑）和"整个 session 至今累计花了多少"（读 `Agent` 持有的那份 `tokenMeter`）,两个上限可以配成不同的值。**如果还要再往上加"单账号"这一层**，就不能再放在某一个 `Agent` 实例身上了——一个账号完全可能同时开着好几个 `Session`/`Agent`,账号级别的累计必须存在**跨多个 `Agent` 实例共享**的地方（比如一个独立的 `AccountBudgetStore`，多个 `Agent` 在创建时注入同一个实例的引用），职责上更接近 Day26 大纲里"Subagent 全局并发/Token 预算"提到的那种"多个 Agent 实例共享同一份预算账本"的模式，而不是简单地在 `Agent` 类内部再加一个字段。
+
 ## 3. `usage` 存在哪：跟着 `assistant/message`，不单独开事件
 
 ```ts

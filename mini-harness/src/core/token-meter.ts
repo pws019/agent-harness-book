@@ -52,6 +52,13 @@ export class TokenMeter {
       cacheWriteTokens: this.cacheWriteTokens,
     }
   }
+
+  /** input + output 的已知总和；任一为 'unknown' 则整体是 'unknown'，不悄悄当 0 处理。 */
+  totalKnownTokens(): number | 'unknown' {
+    return this.inputTokens === 'unknown' || this.outputTokens === 'unknown'
+      ? 'unknown'
+      : this.inputTokens + this.outputTokens
+  }
 }
 
 function add(current: number | 'unknown', delta: number): number | 'unknown' {

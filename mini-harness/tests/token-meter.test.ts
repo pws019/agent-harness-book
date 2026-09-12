@@ -44,4 +44,19 @@ describe('TokenMeter', () => {
     expect(totals.cacheReadTokens).toBe('unknown')
     expect(totals.cacheWriteTokens).toBe('unknown')
   })
+
+  describe('totalKnownTokens', () => {
+    it('is input + output, ignoring cache fields entirely', () => {
+      const meter = new TokenMeter()
+      meter.record({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 999, cacheWriteTokens: 999 })
+      expect(meter.totalKnownTokens()).toBe(120)
+    })
+
+    it('is unknown as soon as either input or output is unknown, even if cache fields are fine', () => {
+      const meter = new TokenMeter()
+      meter.record({ inputTokens: 10, outputTokens: 5 })
+      meter.record(undefined) // poisons input/output (and cache) to unknown
+      expect(meter.totalKnownTokens()).toBe('unknown')
+    })
+  })
 })

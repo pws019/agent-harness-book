@@ -47,6 +47,20 @@ describe('planCompaction', () => {
     expect((plan!.summary.blocks[0] as { text: string }).text).toContain('fact-3') // 第4轮（i=3）也在被压缩范围内
     expect((plan!.summary.blocks[0] as { text: string }).text).not.toContain('fact-4') // 最后一轮保留，不该出现在摘要里
   })
+
+  it('keeps track of who originally said each compacted line, not just the raw text', () => {
+    const session = new Session()
+    seedConversation(session, 3, (i) => `fact-${i}`)
+
+    const plan = planCompaction(session.events, { keepRecentSurfaceEvents: 0 })!
+    const text = (plan.summary.blocks[0] as { text: string }).text
+
+    // 摘要整体包成一条 assistant 消息（Message.role 没有"摘要"这个选项），但每一行
+    // 仍然保留了原始说话人——不能因为外层包装是 assistant 就让内容也变得看不出
+    // 这句话原本是用户说的还是模型说的。
+    expect(text).toContain('user: question 0: fact-0')
+    expect(text).toContain('assistant: answer 0')
+  })
 })
 
 describe('applyCompaction + deriveMessages: the summary replaces the compacted range without touching the original log', () => {

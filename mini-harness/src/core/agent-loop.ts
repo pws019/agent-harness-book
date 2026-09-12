@@ -150,14 +150,10 @@ export async function* runTurn(
 
     if (options.maxTokens !== undefined) {
       tokenMeter.record(result.usage)
-      const totals = tokenMeter.totals()
       // fail-closed：一旦累计值变成 'unknown'（某次 attempt 没上报 usage），我们没法
       // 证明"还在预算内"，所以当作已经超预算处理，而不是悄悄放行继续跑下去。
-      const spent =
-        totals.inputTokens === 'unknown' || totals.outputTokens === 'unknown'
-          ? undefined
-          : totals.inputTokens + totals.outputTokens
-      if (spent === undefined || spent > options.maxTokens) {
+      const spent = tokenMeter.totalKnownTokens()
+      if (spent === 'unknown' || spent > options.maxTokens) {
         const stopReason: StopReason = { kind: 'budget_exhausted', reason: 'max_tokens' }
         yield { type: 'turn-end', stopReason }
         return stopReason

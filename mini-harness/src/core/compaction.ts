@@ -35,12 +35,22 @@ export function planCompaction(
   const fromSeq = toCompact[0]!.seq
   const toSeq = toCompact[toCompact.length - 1]!.seq
 
+  // 每一行都带上原始 role 前缀（user/assistant），不能只把文本无差别拼在一起——
+  // 内容本身没删字不代表没丢信息，"这句话原本是谁说的"也是历史事实的一部分，
+  // 混在一起拼接会把它悄悄丢掉，跟"确定性裁剪不做有损压缩"这条承诺对不上。
   const facts = toCompact
     .filter((event): event is Extract<SessionEvent, { type: 'user/message' | 'assistant/message' }> => event.type !== 'tool/result')
-    .map((event) => extractText(event.message))
-    .filter((line) => line.length > 0)
+    .map((event) => ({ role: event.message.role, text: extractText(event.message) }))
+    .filter(({ text }) => text.length > 0)
+    .map(({ role, text }) => `${role}: ${text}`)
 
-  const summaryText = `[compacted ${toCompact.length} earlier events] ${facts.join(' | ')}`
+  const summaryText = `[compacted ${toCompact.length} earlier events]\n${facts.join('\n')}`
+  // summary 整体包成一条 role: 'assistant' 的消息——不是因为内容真的是"模型说的"，
+  // 是因为 Message.role 只有 user/assistant/tool 三种，没有"系统生成的摘要"这个选项。
+  // 标成 assistant 让模型把它理解成"agent 自己对历史的一次陈述"；标成 user 会让模型
+  // 误以为这一大段（包括原本是模型自己说的话）全是用户说的，在"这句话该归因给谁"
+  // 这件事上制造混淆——上面按行保留的 role 前缀，就是用来弥补"外层包装必须二选一"
+  // 这个限制、不让说话人身份彻底丢失的手段。
   return { fromSeq, toSeq, summary: { role: 'assistant', blocks: [{ type: 'text', text: summaryText }] } }
 }
 
