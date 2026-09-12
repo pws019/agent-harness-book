@@ -9,6 +9,8 @@ export interface SystemPromptSections {
   readonly workspaceRoot: string
   readonly tools: readonly ToolSchema[]
   readonly taskContext?: string
+  /** 政策提示，比如"不要执行写操作""每次调查最多10轮"。省略时不渲染这个分段。 */
+  readonly policies?: readonly string[]
 }
 
 /**
@@ -26,7 +28,14 @@ export function buildSystemPrompt(sections: SystemPromptSections): string {
   if (sections.taskContext) {
     parts.push(`# Task context\n${sections.taskContext}`)
   }
+  if (sections.policies && sections.policies.length > 0) {
+    parts.push(`# Policies\n${renderPolicyList(sections.policies)}`)
+  }
   return parts.join('\n\n')
+}
+
+function renderPolicyList(policies: readonly string[]): string {
+  return policies.map((policy) => `- ${policy}`).join('\n')
 }
 
 function renderToolList(tools: readonly ToolSchema[]): string {

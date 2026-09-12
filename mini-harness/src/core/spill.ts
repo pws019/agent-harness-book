@@ -45,3 +45,22 @@ export function spillLargeToolResults(
     return { ...event, content: `[output too large: ${event.content.length} chars, spilled as "${id}"]` }
   })
 }
+
+const SPILL_PLACEHOLDER_PATTERN = /^\[output too large: \d+ chars, spilled as "([^"]+)"\]$/
+
+/**
+ * 把 `spillLargeToolResults` 留下的占位文本换回真实内容。区分三种情况，调用方不用
+ * 自己再猜"这是正常引用格式只是内容丢了，还是文本本身格式就不对"：
+ * - `content` 根本不匹配占位文本的格式 -> 原样返回，它就是一段普通内容，不是引用。
+ * - 匹配占位格式，且 `store` 里换得到 -> 返回真实内容。
+ * - 匹配占位格式，但 `store.get(id)` 是 `undefined`（比如换了一个新的 store 实例，
+ *   旧数据没了）-> 返回一句明确的"内容已丢失"提示，不是原样吐出占位文本，也不抛异常。
+ */
+export function resolveSpilledContent(content: string, store: SpillStore): string {
+  const match = SPILL_PLACEHOLDER_PATTERN.exec(content)
+  if (!match) return content
+  const id = match[1]!
+  const resolved = store.get(id)
+  if (resolved !== undefined) return resolved
+  return `[spilled content lost: id "${id}" not found in store]`
+}

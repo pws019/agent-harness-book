@@ -43,6 +43,7 @@ interface GenerateOptions {
   readonly provider: string   // 比如 'anthropic'，告诉总机"我要找哪个接线员"
   readonly model: string      // 比如 'claude-opus-4'，具体型号，总机不关心它的含义，原样转交
   readonly messages: readonly Message[]
+  readonly system?: string    // 一段用户看不见的独立指令（Day11 才会真正讲它是什么、怎么产出），今天先知道有这么个字段
   // ...其他采样参数
 }
 

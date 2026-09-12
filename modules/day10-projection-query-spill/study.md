@@ -8,6 +8,8 @@
 
 ## 1. `projectSummary`：统计视图
 
+**先说这个函数解决的是什么真实需求**：这不是一个假想场景——`mini-harness/src/cli.ts` 里已经有一个真实命令 `pnpm cli -- inspect-session <path>`（`inspectSession()` 函数），用户想在真正打开、重放整个对话之前，先看一眼"这个 session 大概跑了多少轮、都调用过哪些工具、上次是怎么结束的",不需要把整份日志重放成完整对话。如果为了拿到这几个数字，把日志喂给 `deriveMessages()` 重建出完整的对话文本再去数，等于为了"12 轮、调了8次工具"这几个数字，做了一次远比需要的更贵的计算，还要重新处理所有文本细节（block 组装、消息拼接）——这些细节 `projectSummary` 根本不关心。这就是为什么它要单独作为一个函数存在：**同一份原始事件，按需要派生出"轻"的统计视图，不必每次都走"重"的完整重建**。
+
 ```ts
 export interface SessionProjection {
   readonly turnCount: number
@@ -20,6 +22,8 @@ export interface SessionProjection {
 
 ## 2. `queryEvents`：为什么按 `seq` 分页，不是数组下标
 
+**先说这个函数解决的是什么真实需求**：一个跑了很久的 session，事件日志可能积累到成千上万条。不管是"调试工具想看某一段时间发生了什么"，还是以后 Day23 要做的"客户端断线重连后，只想要断线之后新增的那部分事件，不想把整份历史再传一遍"，都需要一种"只要日志的一部分,还要能稳定地说清楚'从哪接着往下要'"的能力——这就是分页游标要解决的问题，跟你在前端做过的"下拉加载更多""游标分页 API"是同一类需求。
+
 ```ts
 export function queryEvents(events: readonly SessionEvent[], options: { afterSeq?: number; limit?: number }): readonly SessionEvent[]
 ```
@@ -27,6 +31,8 @@ export function queryEvents(events: readonly SessionEvent[], options: { afterSeq
 `{ afterSeq: 10, limit: 20 }` 意思是"给我 seq 严格大于10的、最多20条"。**为什么不直接用数组下标（比如"从第10个开始，取20个"）？**——因为下标只在"这个数组本身不会变"的前提下才稳定。今天看起来 `events` 数组确实不会变（只增不减），但 Day13 压缩之后，`deriveMessages` 的派生结果里旧消息会被摘要替换掉——如果查询接口靠的是"第几个"，压缩前后同一个下标指向的可能是完全不同的东西。`seq` 是写入时就永久烙在事件上的身份，不管以后派生逻辑怎么演进，`seq=17` 永远指向同一条原始事件。**今天用不上这个差异（因为还没做压缩），但选对了游标的类型，Day13 就不用回头重构分页接口。**
 
 ## 3. `deriveTitle`：标题要记住"从哪来"，不是只给一个字符串
+
+**先说这个函数解决的是什么真实需求**：这个你其实天天在用——打开 ChatGPT 或者 Claude.ai，左侧栏是一列历史对话，每条不是显示"session-a3f92c1e"这种原始 ID，而是显示一句"帮我看看 auth 模块的调用链"这样的短标题，方便你一眼认出是哪次对话。`deriveTitle` 就是产出这一行短标题的函数——同一份 `session.events`，又一种派生视图。跟 `projectSummary` 一样，它也不是纸上谈兵：`cli.ts` 的 `inspectSession()` 就真的调了它（[cli.ts:129](../../mini-harness/src/cli.ts#L129)），打印出"title: "帮我看看 auth 模块的调用链" (from seq 3)"这样一行。
 
 ```ts
 export interface SessionTitle {
@@ -49,7 +55,7 @@ export function spillLargeToolResults(
 ): readonly SessionEvent[]
 ```
 
-两种策略怎么选，取决于"这份内容有没有可能整个都有用"：`search_text` 的截断策略假设"前50条命中通常足够，不需要整个结果集"；Spill 假设"这条工具结果可能整份都有价值（比如读了一个大文件），只是不该无条件塞进每次发给模型的请求里，需要的时候再取"。
+两种策略怎么选，取决于"这份内容有没有可能整个都有用"：`search_text` 的截断策略假设"前50条命中通常足够，不需要整个结果集"；Spill 假设"这条工具结果可能整份都有价值（比如读了一个大文件），只是不该无条件塞进每次发给模型的请求里，需要的时候再取"。**"需要的时候"具体是谁、什么时候会去取回来**：比如模型后续一步突然需要引用这份内容里的某个细节，或者用户在 UI 上点开"查看完整结果"——这时候拿着日志里留的引用去 `SpillStore` 换回完整内容，而不是每次组装请求都无条件带着这份大内容。
 
 **今天故意没做的事**：`spillLargeToolResults` 是一个独立的"日志变换"函数，不是 `Agent`/`Session` 内置的能力——`Agent` 写事件的时候不会自动检查内容长度、自动 spill。这是 YAGNI：目前还没有一个真实场景需要"写入的同时就自动 spill"，先证明"引用和内容分离"这个机制本身是对的（可以单独测试、单独验证"换得回来"），比直接嵌进 `Agent.appendEvent()` 里更安全。如果哪天真的需要实时生效，再考虑往那层接。
 

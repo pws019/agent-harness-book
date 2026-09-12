@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Session } from '../src/core/session.js'
-import { InMemorySpillStore, spillLargeToolResults } from '../src/core/spill.js'
+import { InMemorySpillStore, resolveSpilledContent, spillLargeToolResults } from '../src/core/spill.js'
 import type { Message } from '../src/llm/types.js'
 
 function userText(text: string): Message {
@@ -76,5 +76,46 @@ describe('spillLargeToolResults', () => {
 
     const stillOriginal = events.filter((e) => e.type === 'tool/result').map((e) => (e as { content: string }).content)
     expect(stillOriginal).toEqual(originalContents)
+  })
+})
+
+describe('resolveSpilledContent', () => {
+  it('returns ordinary content unchanged when it is not a spill placeholder', () => {
+    const store = new InMemorySpillStore()
+    expect(resolveSpilledContent('just a normal tool result', store)).toBe('just a normal tool result')
+  })
+
+  it('resolves a real placeholder back to the original content when the store still has it', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('step/start', { turn: 0, step: 1 })
+    const longContent = 'the real, full tool output'.repeat(20)
+    session.append('tool/call', { turn: 0, step: 1, callId: 'c1', name: 'echo', arguments: '{}' })
+    session.append('tool/result', { turn: 0, step: 1, callId: 'c1', content: longContent, isError: false })
+
+    const store = new InMemorySpillStore()
+    const spilled = spillLargeToolResults(session.events, store, 10)
+    const placeholder = (spilled.find((e) => e.type === 'tool/result') as { content: string }).content
+
+    expect(resolveSpilledContent(placeholder, store)).toBe(longContent)
+  })
+
+  it('gives an explicit "lost" message instead of the raw placeholder or a throw when the id is gone', () => {
+    const store = new InMemorySpillStore()
+    const id = store.put('will be gone')
+    const placeholder = `[output too large: 999 chars, spilled as "${id}"]`
+
+    const freshStore = new InMemorySpillStore() // 换了个新的 store 实例，旧数据自然找不到
+    const resolved = resolveSpilledContent(placeholder, freshStore)
+
+    expect(resolved).not.toBe(placeholder) // 不是原样吐出占位文本
+    expect(resolved).toContain('lost')
+    expect(resolved).toContain(id)
+  })
+
+  it('leaves text that merely looks similar to a placeholder untouched (anchored match, not a loose substring check)', () => {
+    const store = new InMemorySpillStore()
+    const notQuiteAPlaceholder = 'see also: [output too large: 5 chars, spilled as "x"] (quoted in a longer sentence)'
+    expect(resolveSpilledContent(notQuiteAPlaceholder, store)).toBe(notQuiteAPlaceholder)
   })
 })

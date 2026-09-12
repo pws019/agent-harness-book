@@ -69,4 +69,25 @@ describe('buildSystemPrompt', () => {
     expect(after).not.toContain('list_files')
     expect(after).toContain('echo') // 没被移除的工具还在，不是整段被清空了
   })
+
+  it('renders a Policies section as a list when policies are provided', () => {
+    const prompt = buildSystemPrompt({
+      identity: 'x',
+      workspaceRoot: '/repo',
+      tools: [],
+      policies: ['do not perform write operations', 'at most 10 rounds per investigation'],
+    })
+
+    expect(prompt).toContain('# Policies')
+    expect(prompt).toContain('- do not perform write operations')
+    expect(prompt).toContain('- at most 10 rounds per investigation')
+  })
+
+  it('omits the Policies section entirely when policies is absent or empty', () => {
+    const withoutField = buildSystemPrompt({ identity: 'x', workspaceRoot: '/repo', tools: [] })
+    const withEmptyArray = buildSystemPrompt({ identity: 'x', workspaceRoot: '/repo', tools: [], policies: [] })
+
+    expect(withoutField).not.toContain('Policies')
+    expect(withEmptyArray).not.toContain('Policies')
+  })
 })

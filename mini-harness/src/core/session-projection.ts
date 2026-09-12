@@ -9,12 +9,15 @@ import type { SessionEvent, TurnEndReason } from './session.js'
  */
 export interface SessionProjection {
   readonly turnCount: number
+  /** 不分名字的工具调用总数——`toolCallCountByName` 按名字拆开看，这个字段回答"总共调了几次"。 */
+  readonly toolCallCount: number
   readonly toolCallCountByName: Readonly<Record<string, number>>
   readonly lastStopReason: TurnEndReason | undefined
 }
 
 export function projectSummary(events: readonly SessionEvent[]): SessionProjection {
   let turnCount = 0
+  let toolCallCount = 0
   const toolCallCountByName: Record<string, number> = {}
   let lastStopReason: TurnEndReason | undefined
 
@@ -24,6 +27,7 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
         turnCount += 1
         break
       case 'tool/call':
+        toolCallCount += 1
         toolCallCountByName[event.name] = (toolCallCountByName[event.name] ?? 0) + 1
         break
       case 'turn/end':
@@ -43,7 +47,7 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
         assertNeverEvent(event)
     }
   }
-  return { turnCount, toolCallCountByName, lastStopReason }
+  return { turnCount, toolCallCount, toolCallCountByName, lastStopReason }
 }
 
 function assertNeverEvent(event: never): never {

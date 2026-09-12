@@ -30,13 +30,35 @@ describe('projectSummary', () => {
 
     expect(projectSummary(session.events)).toEqual({
       turnCount: 2,
+      toolCallCount: 2,
       toolCallCountByName: { list_files: 1, search_text: 1 },
       lastStopReason: { kind: 'cancelled' },
     })
   })
 
   it('reads as an empty projection on a fresh, empty log', () => {
-    expect(projectSummary([])).toEqual({ turnCount: 0, toolCallCountByName: {}, lastStopReason: undefined })
+    expect(projectSummary([])).toEqual({
+      turnCount: 0,
+      toolCallCount: 0,
+      toolCallCountByName: {},
+      lastStopReason: undefined,
+    })
+  })
+
+  it('toolCallCount is the unnamed total, independent of how many distinct tool names appear', () => {
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('step/start', { turn: 0, step: 1 })
+    session.append('tool/call', { turn: 0, step: 1, callId: 'c1', name: 'list_files', arguments: '{}' })
+    session.append('tool/result', { turn: 0, step: 1, callId: 'c1', content: 'ok', isError: false })
+    session.append('tool/call', { turn: 0, step: 1, callId: 'c2', name: 'list_files', arguments: '{}' })
+    session.append('tool/result', { turn: 0, step: 1, callId: 'c2', content: 'ok', isError: false })
+    session.append('tool/call', { turn: 0, step: 1, callId: 'c3', name: 'search_text', arguments: '{}' })
+    session.append('tool/result', { turn: 0, step: 1, callId: 'c3', content: 'ok', isError: false })
+
+    const summary = projectSummary(session.events)
+    expect(summary.toolCallCount).toBe(3) // 总数不分名字
+    expect(summary.toolCallCountByName).toEqual({ list_files: 2, search_text: 1 }) // 按名字拆开还是两个
   })
 })
 
