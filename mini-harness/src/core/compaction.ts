@@ -1,5 +1,5 @@
 import type { ContentBlock, Message } from '../llm/types.js'
-import { collectCompactionRanges, Session, type SessionEvent } from './session.js'
+import { collectCompactionRanges, isJsonValue, Session, SessionAppendError, type SessionEvent } from './session.js'
 
 export interface CompactionPlan {
   readonly fromSeq: number
@@ -72,12 +72,20 @@ function extractText(message: Message): string {
  * 三条事件。**不删除、不改写**被压缩范围里的原始事件——它们还在日志里，只是
  * `deriveMessages()` 从这一刻起会跳过它们、换成这条摘要。
  *
- * 注意这三次 `append()` **不是原子的**：如果中间一次抛出异常（比如摘要内容不是
- * 无损 JSON），前面已经写进去的 `compaction/start` 不会被撤销，Session 会带着一个
- * 永远等不到 `compaction/end` 的"开着的压缩"——这是留给 exercise.md 任务3 的坑，
- * 故意没有在这里先修好。
+ * 这三次 `append()` 本身不是原子的：如果中间一次抛出异常，前面已经写进去的
+ * `compaction/start` 不会被自动撤销。但把 `Session` 三次 `append()` 里唯一可能因为
+ * "数据本身不合法"而失败的那一步（`compaction/summary` 的 `isJsonValue` 校验）挑出来，
+ * 提前到任何一次 `append()` 被调用之前做一遍，就能保证：只要这次校验通过，后面三次
+ * `append()` 全部只依赖状态机（调用顺序对不对），不会再因为 payload 内容失败——
+ * 也就不会留下一个永远等不到 `compaction/end` 的"半开着的压缩"。这是"验证一次、
+ * 再提交"（validate-then-commit），不是给 `Session` 添加撤销/回滚能力——`compaction/start`
+ * 目前只有这一个调用方，把校验放在这唯一的入口最前面，跟教 `Session` 自己识别"半开
+ * 压缩"这种更通用的兜底相比，今天的防护力是等价的，复杂度低得多。
  */
 export function applyCompaction(session: Session, plan: CompactionPlan): void {
+  if (!isJsonValue(plan.summary)) {
+    throw new SessionAppendError('compaction summary 不是无损 JSON，拒绝开始一次注定完成不了的压缩')
+  }
   session.append('compaction/start', { fromSeq: plan.fromSeq, toSeq: plan.toSeq })
   session.append('compaction/summary', { message: plan.summary })
   session.append('compaction/end', {})

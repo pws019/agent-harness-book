@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { applyCompaction, planCompaction } from '../src/core/compaction.js'
-import { deriveMessages, Session } from '../src/core/session.js'
+import { deriveMessages, Session, SessionAppendError } from '../src/core/session.js'
 import type { Message } from '../src/llm/types.js'
 
 function userText(text: string): Message {
@@ -118,5 +118,30 @@ describe('fault injection: needle in a haystack survives compaction', () => {
     const messages = deriveMessages(session.events)
     const summaryText = (messages[0] as { blocks: readonly { text: string }[] }).blocks[0]!.text
     expect(summaryText).toContain(needle)
+  })
+})
+
+describe('applyCompaction: an unserializable summary must not leave a half-open compaction', () => {
+  it('refuses before writing anything, instead of leaving compaction/start stranded with no matching end', () => {
+    const session = new Session()
+    seedConversation(session, 3, (i) => `fact-${i}`)
+    const goodPlan = planCompaction(session.events, { keepRecentSurfaceEvents: 0 })!
+
+    // 绕过 TypeScript 类型检查，构造一个 isJsonValue 会拒绝的 summary（塞一个函数进去）。
+    const badPlan = {
+      ...goodPlan,
+      summary: { role: 'assistant' as const, blocks: [{ type: 'text' as const, text: (() => {}) as unknown as string }] },
+    }
+
+    const eventCountBefore = session.events.length
+    expect(() => applyCompaction(session, badPlan)).toThrow(SessionAppendError)
+
+    // 没有留下任何"半开"的状态：一条 compaction/start 都没真正写进去。
+    expect(session.events.length).toBe(eventCountBefore)
+    expect(session.events.some((e) => e.type === 'compaction/start')).toBe(false)
+
+    // Session 没有被卡住：紧接着用一份合法的 plan 还能正常压缩成功——如果刚才那次
+    // 失败尝试真的留下了一个"半开的压缩"，这一步会因为"另一个压缩还开着"直接抛错。
+    expect(() => applyCompaction(session, goodPlan)).not.toThrow()
   })
 })
