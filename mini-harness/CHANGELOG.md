@@ -141,3 +141,23 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - **修了第二个真实 bug（自动化测试测不出来的那种）**：`main()` 用 `argv[0] === 'inspect-session'` 判断子命令，但手动执行 `pnpm cli -- inspect-session <path>` 时直接报了个不相关的"缺少 --query"错误。原因：有的 pnpm 版本会把 `pnpm run <script> -- <args>` 里的 `--` 原样转发，`argv[0]` 实际是字符串 `'--'`，子命令判断直接失配、落到默认调查分支。测试测不出来是因为 `tests/session-milestone.test.ts` 直接调用 `runInvestigation(parseArgs([...]))`，绕开了 `main()`/`process.argv` 这层——这是"胶水层代码只有真的跑一遍 CLI 才能验证"的一个具体例子。修复：`main()` 开头剥掉开头那一个（如果有）字面量 `'--'`。
 
 至此 `pnpm test` 共 283 条测试全绿，`pnpm typecheck` 无错误。**阶段二（Day8-14，可回放的状态与上下文）完成。**
+
+## Day14 之后、Day15 之前：两个小修复（未各自成篇）
+
+不是新的一天，是继续巩固 Day10-14 时顺手发现并修的两个问题，没有对应的 `modules/` 文档：
+- `src/core/compaction.ts` 的 `applyCompaction`：见 `modules/day13-context-compaction/exercise.md` 任务3、`modules/day13-context-compaction/answer.md`——加了前置校验，防止 `compaction/summary` 校验失败时留下一个永远关不上的"半开压缩"。
+- `src/core/session-projection.ts` 的 `SessionProjection` 新增 `previousStopReason`（倒数第二个 `turn/end` 的 reason）：`lastStopReason` 只反映"日志里最后一个 turn/end"，崩溃恢复后紧接着的新 turn 一旦正常完成，`lastStopReason` 立刻变回 `completed`，看不出"上一次其实崩溃过"——`cli.ts` 的 `inspect-session` 现在会在 `previousStopReason?.kind === 'cancelled'` 时额外提示"上一次是被中断的"。
+
+跑完这两个修复，`pnpm test` 共 297 条测试全绿。
+
+## Day15：文件系统能力与一致性
+
+阶段三开篇。第一次给 Agent 加写文件的能力，同时兑现 Day4 就留下的伏笔——`resolveWithinRoot` 当年只做字符串层面的 `../` 检测，注释里明确写着 symlink 逃逸留到今天处理。
+
+新增：
+- `src/tools/workspace.ts` —— `resolveWithinRoot` 升级成两道关卡：字符串层面的 `../` 检测（原有）+ 新增的 `safeRealpath` 真实路径比对，挡住"字符串上没有 `..`，但中间某一段其实是指向 workspace 外面的符号链接"这类逃逸。`safeRealpath` 顺着路径往上找第一个真实存在的祖先目录做 `realpath`，再拼回还不存在的那段路径，因此目标文件本身还不存在（比如要新建）时也能正确判断。
+- `src/tools/file-io.ts`（新文件）—— `contentHash()`（sha256）、`looksBinary()`（采样找 NUL 字节的二进制探测）、`writeFileAtomic()`（先写临时文件再 rename，避免半写状态）、`simpleDiff()`（裁掉公共前后缀的朴素行级 diff，不是真正的 LCS 算法，只够预览用）。
+- `src/tools/fs-tools.ts` —— `read_file` 新增 `MAX_FILE_BYTES`（2MB）大小限制、二进制检测、输出新增 `contentHash` 字段。新增 `edit_file`：Day15 第一个写工具，一个深接口同时覆盖新建/覆盖/`dryRun` 预览三种意图，`expectedHash` 提供乐观并发控制（文件已存在必须提供且匹配当前磁盘哈希，否则拒绝覆盖，不做"最后写入者获胜"）。`edit_file` 目前只在工具层存在，没有接入 `cli.ts` 的调查 Agent（那个 Agent 按设计是只读调查工具，见 `docs/product-scope.md`）。
+- `tests/tools.test.ts` 新增 7 条（`edit_file` 创建/覆盖/dryRun/hash 不匹配/二进制拒绝），`tests/fs-tools-integration.test.ts`（新文件，7条）：symlink 逃逸（`read_file`/`edit_file`/workspace 内部的合法 symlink 三种情况）、超大文件、二进制文件、只读目录权限失败、以及一条贯穿 `read_file` → `edit_file` → `read_file` → 用旧 hash 再编辑一次的跨工具集成测试（验证 hash 真的在两次调用之间正确传递、并在成功编辑后正确轮换，不是分别测试两个工具各自都对）。
+
+至此 `pnpm test` 共 311 条测试全绿，`pnpm typecheck` 无错误。

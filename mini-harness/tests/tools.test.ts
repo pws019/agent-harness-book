@@ -1,8 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { ToolRegistry } from '../src/tools/registry.js'
-import { createReadOnlyFsTools } from '../src/tools/fs-tools.js'
+import { createEditFileTool, createReadOnlyFsTools } from '../src/tools/fs-tools.js'
 import { ToolArgsError, ToolNotFoundError, ToolTimeoutError, type ToolDefinition } from '../src/tools/types.js'
 import { PathEscapeError, resolveWithinRoot } from '../src/tools/workspace.js'
 
@@ -18,6 +20,18 @@ function newRegistry(): ToolRegistry {
 function ctx(signal: AbortSignal = new AbortController().signal) {
   return { signal, cwd: workspaceRoot }
 }
+
+// edit_file 会真的写盘，不能共用只读工具那份签入 git 的 fixtures/workspace——每个用例
+// 在系统临时目录下开一块自己的地盘，用完删掉，互不干扰也不留垃圾。
+const tempDirs: string[] = []
+function tempWorkspace(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'mini-harness-edit-'))
+  tempDirs.push(dir)
+  return dir
+}
+afterEach(() => {
+  while (tempDirs.length > 0) rmSync(tempDirs.pop()!, { recursive: true, force: true })
+})
 
 describe('ToolRegistry.schemas() never leaks implementation details to the model', () => {
   it('only exposes name/description/parameters', () => {
@@ -139,6 +153,113 @@ describe('search_text', () => {
     await expect(registry.execute('search_text', { query: 'x', path: '..' }, ctx())).rejects.toThrow(
       PathEscapeError,
     )
+  })
+})
+
+describe('edit_file: create / overwrite / dry-run', () => {
+  function editRegistry(root: string): ToolRegistry {
+    const registry = new ToolRegistry()
+    registry.define(createEditFileTool(root))
+    return registry
+  }
+
+  it('creates a brand-new file when expectedHash is omitted', async () => {
+    const root = tempWorkspace()
+    const registry = editRegistry(root)
+    const result = await registry.execute('edit_file', { file_path: 'new.txt', content: 'hello\n' }, ctx())
+    const value = result.value as { applied: boolean; previousHash: string | null; newHash: string }
+    expect(value.applied).toBe(true)
+    expect(value.previousHash).toBeNull()
+    expect(value.newHash).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it('rejects creating a file that already exists without expectedHash', async () => {
+    const root = tempWorkspace()
+    writeFileSync(join(root, 'existing.txt'), 'old\n', 'utf8')
+    const registry = editRegistry(root)
+    await expect(
+      registry.execute('edit_file', { file_path: 'existing.txt', content: 'new\n' }, ctx()),
+    ).rejects.toThrow(/already exists/)
+  })
+
+  it('rejects expectedHash on a file that does not exist yet', async () => {
+    const root = tempWorkspace()
+    const registry = editRegistry(root)
+    await expect(
+      registry.execute('edit_file', { file_path: 'nope.txt', content: 'x', expectedHash: 'deadbeef' }, ctx()),
+    ).rejects.toThrow(/does not exist yet/)
+  })
+
+  it('overwrites when expectedHash matches the current content', async () => {
+    const root = tempWorkspace()
+    const registry = editRegistry(root)
+    const read = new ToolRegistry()
+    for (const tool of createReadOnlyFsTools(root)) read.define(tool)
+    writeFileSync(join(root, 'a.txt'), 'v1\n', 'utf8')
+
+    const before = (await read.execute('read_file', { file_path: 'a.txt' }, { signal: new AbortController().signal, cwd: root }))
+      .value as { contentHash: string }
+    const result = await registry.execute(
+      'edit_file',
+      { file_path: 'a.txt', content: 'v2\n', expectedHash: before.contentHash },
+      ctx(),
+    )
+    const value = result.value as { applied: boolean; diff: string }
+    expect(value.applied).toBe(true)
+    expect(value.diff).toBe('-v1\n+v2')
+  })
+
+  it('dryRun returns a diff without touching disk', async () => {
+    const root = tempWorkspace()
+    writeFileSync(join(root, 'a.txt'), 'v1\n', 'utf8')
+    const registry = editRegistry(root)
+    const read = new ToolRegistry()
+    for (const tool of createReadOnlyFsTools(root)) read.define(tool)
+    const before = (await read.execute('read_file', { file_path: 'a.txt' }, { signal: new AbortController().signal, cwd: root }))
+      .value as { contentHash: string }
+
+    const result = await registry.execute(
+      'edit_file',
+      { file_path: 'a.txt', content: 'v2\n', expectedHash: before.contentHash, dryRun: true },
+      ctx(),
+    )
+    const value = result.value as { applied: boolean; newHash: string | null }
+    expect(value.applied).toBe(false)
+    expect(value.newHash).toBeNull()
+
+    const stillOld = (await read.execute('read_file', { file_path: 'a.txt' }, { signal: new AbortController().signal, cwd: root }))
+      .value as { lines: string[] }
+    expect(stillOld.lines).toEqual(['v1', ''])
+  })
+
+  it('rejects an edit whose expectedHash no longer matches the file on disk (TOCTOU)', async () => {
+    const root = tempWorkspace()
+    writeFileSync(join(root, 'a.txt'), 'v1\n', 'utf8')
+    const read = new ToolRegistry()
+    for (const tool of createReadOnlyFsTools(root)) read.define(tool)
+    const before = (await read.execute('read_file', { file_path: 'a.txt' }, { signal: new AbortController().signal, cwd: root }))
+      .value as { contentHash: string }
+
+    // 读完之后、编辑之前，文件被"别人"改了
+    writeFileSync(join(root, 'a.txt'), 'concurrently changed\n', 'utf8')
+
+    const registry = editRegistry(root)
+    await expect(
+      registry.execute('edit_file', { file_path: 'a.txt', content: 'v2\n', expectedHash: before.contentHash }, ctx()),
+    ).rejects.toThrow(/has changed since you last read it/)
+
+    const after = (await read.execute('read_file', { file_path: 'a.txt' }, { signal: new AbortController().signal, cwd: root }))
+      .value as { lines: string[] }
+    expect(after.lines).toEqual(['concurrently changed', ''])
+  })
+
+  it('refuses to write binary-looking content', async () => {
+    const root = tempWorkspace()
+    const registry = editRegistry(root)
+    const binaryish = 'x\0y'
+    await expect(
+      registry.execute('edit_file', { file_path: 'bin.dat', content: binaryish }, ctx()),
+    ).rejects.toThrow(/binary/)
   })
 })
 

@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { join, relative } from 'node:path'
+import { contentHash, ensureNotBinaryOrThrow, simpleDiff, writeFileAtomic } from './file-io.js'
 import { ToolExecutionError, type ToolDefinition } from './types.js'
 import { resolveWithinRoot } from './workspace.js'
 
@@ -7,6 +8,9 @@ const SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', '.turbo'])
 const MAX_LIST_ENTRIES = 200
 const MAX_SEARCH_MATCHES = 50
 const MAX_SEARCH_FILE_BYTES = 512 * 1024
+/** `read_file`/`edit_file` 共用的整份文件大小上限——比 search_text 的逐文件跳过阈值更宽，
+ * 因为这两个工具是模型主动挑中的单个目标文件，不是"顺手扫过去"。 */
+const MAX_FILE_BYTES = 2 * 1024 * 1024
 
 // ---------------------------------------------------------------------------
 // read_file: 深工具的示范——一次调用完成"打开+定位+读取"，模型只给意图层面的参数。
@@ -24,13 +28,15 @@ interface ReadFileValue {
   readonly endLine: number
   readonly totalLines: number
   readonly lines: readonly string[]
+  /** 当前磁盘内容的 sha256——`edit_file` 的 `expectedHash` 就是从这里抄回去的，见 Day15 study.md。 */
+  readonly contentHash: string
 }
 
 export function createReadFileTool(root: string): ToolDefinition<ReadFileValue> {
   return {
     name: 'read_file',
     description:
-      'Read a text file inside the workspace and return its content with line numbers. Defaults to the first 200 lines.',
+      'Read a text file inside the workspace and return its content with line numbers. Defaults to the first 200 lines. The returned contentHash can be passed as edit_file\'s expectedHash.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -45,18 +51,19 @@ export function createReadFileTool(root: string): ToolDefinition<ReadFileValue> 
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['path', 'startLine', 'endLine', 'totalLines', 'lines'],
+        required: ['path', 'startLine', 'endLine', 'totalLines', 'lines', 'contentHash'],
         properties: {
           path: { type: 'string' },
           startLine: { type: 'integer' },
           endLine: { type: 'integer' },
           totalLines: { type: 'integer' },
           lines: { type: 'array', items: { type: 'string' } },
+          contentHash: { type: 'string' },
         },
       },
       render(_args, value) {
         const body = value.lines.map((line, i) => `${value.startLine + i}\t${line}`).join('\n')
-        return `${value.path} (lines ${value.startLine}-${value.endLine} of ${value.totalLines} total):\n${body}`
+        return `${value.path} (lines ${value.startLine}-${value.endLine} of ${value.totalLines} total, contentHash: ${value.contentHash}):\n${body}`
       },
     },
     timeoutMs: 5_000,
@@ -64,19 +71,26 @@ export function createReadFileTool(root: string): ToolDefinition<ReadFileValue> 
     async execute(rawArgs) {
       const args = rawArgs as ReadFileArgs
       const target = resolveWithinRoot(root, args.file_path)
-      let raw: string
+      let buffer: Buffer
       try {
-        raw = await readFile(target, 'utf8')
+        buffer = await readFile(target)
       } catch (error) {
         throw new ToolExecutionError(`cannot read "${args.file_path}": ${(error as Error).message}`)
       }
+      if (buffer.byteLength > MAX_FILE_BYTES) {
+        throw new ToolExecutionError(
+          `refusing to read "${args.file_path}": ${buffer.byteLength} bytes exceeds the ${MAX_FILE_BYTES}-byte limit`,
+        )
+      }
+      ensureNotBinaryOrThrow(buffer, args.file_path)
+      const raw = buffer.toString('utf8')
       const allLines = raw.split('\n')
       const offset = Math.max(1, Math.floor(args.offset ?? 1))
       const limit = Math.max(1, Math.floor(args.limit ?? 200))
       const startLine = Math.min(offset, allLines.length + 1)
       const endLine = Math.min(startLine + limit - 1, allLines.length)
       const lines = startLine > endLine ? [] : allLines.slice(startLine - 1, endLine)
-      return { path: args.file_path, startLine, endLine, totalLines: allLines.length, lines }
+      return { path: args.file_path, startLine, endLine, totalLines: allLines.length, lines, contentHash: contentHash(raw) }
     },
   }
 }
@@ -271,4 +285,138 @@ export function createReadOnlyFsTools(root: string): readonly ToolDefinition<unk
     createListFilesTool(root) as ToolDefinition<unknown>,
     createSearchTextTool(root) as ToolDefinition<unknown>,
   ]
+}
+
+// ---------------------------------------------------------------------------
+// edit_file: Day15 第一个写工具。一个深接口同时覆盖"新建"、"整份覆盖"、"预览不落盘"
+// 三种意图，靠 expectedHash + dryRun 两个参数区分，而不是拆成三个各管一段的浅工具。
+// ---------------------------------------------------------------------------
+
+interface EditFileArgs {
+  readonly file_path: string
+  /** 目标文件应有的完整内容——不是 diff/patch，调用方（模型）负责给出改完之后的全文。 */
+  readonly content: string
+  /** 文件已存在时必须提供，且必须等于最近一次 read_file 返回的 contentHash，否则拒绝覆盖。 */
+  readonly expectedHash?: string
+  /** true 时只返回预览 diff，不写盘、不改变磁盘上的任何内容。 */
+  readonly dryRun?: boolean
+}
+
+interface EditFileValue {
+  readonly path: string
+  readonly dryRun: boolean
+  /** dryRun 或者被拒绝时是 false——只有真的写盘成功才是 true。 */
+  readonly applied: boolean
+  readonly diff: string
+  /** 编辑前磁盘上的内容 hash；文件原本不存在时是 null。 */
+  readonly previousHash: string | null
+  /** 写盘之后的新内容 hash；dryRun 或者失败时是 null。 */
+  readonly newHash: string | null
+}
+
+export function createEditFileTool(root: string): ToolDefinition<EditFileValue> {
+  return {
+    name: 'edit_file',
+    description:
+      'Create or overwrite a text file with full new content. Editing an existing file requires expectedHash from a prior read_file call — a mismatch means the file changed since you last read it, and the edit is rejected rather than silently overwriting. Set dryRun to preview a diff without writing.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['file_path', 'content'],
+      properties: {
+        file_path: { type: 'string', description: 'Path relative to the workspace root.' },
+        content: { type: 'string', description: 'The full desired content of the file after this edit.' },
+        expectedHash: {
+          type: 'string',
+          description: "The file's contentHash as last seen via read_file. Required when the file already exists.",
+        },
+        dryRun: { type: 'boolean', description: 'If true, only return a preview diff; do not write to disk.' },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['path', 'dryRun', 'applied', 'diff', 'previousHash', 'newHash'],
+        properties: {
+          path: { type: 'string' },
+          dryRun: { type: 'boolean' },
+          applied: { type: 'boolean' },
+          diff: { type: 'string' },
+          previousHash: { type: 'string', description: 'null when the file did not previously exist' },
+          newHash: { type: 'string', description: 'null when dryRun or the edit was rejected' },
+        },
+      },
+      render(_args, value) {
+        const header = value.applied
+          ? `wrote ${value.path} (newHash: ${value.newHash})`
+          : `dry run for ${value.path} (no changes written)`
+        return `${header}\n${value.diff}`
+      },
+    },
+    timeoutMs: 5_000,
+    // 写操作不可以跟任何兄弟调用并发执行——目前 registry/agent-loop 还没有真正读取
+    // isConcurrencySafe() 去做并发调度（这个字段从 Day4 定义到现在都没有消费者），
+    // 但语义上该怎么标就怎么标，等调度器接上的那天不用回头再改。
+    isConcurrencySafe: () => false,
+    async execute(rawArgs) {
+      const args = rawArgs as EditFileArgs
+      const target = resolveWithinRoot(root, args.file_path)
+      const dryRun = args.dryRun ?? false
+
+      let previousContent: string | null = null
+      let previousHash: string | null = null
+      try {
+        const buffer = await readFile(target)
+        if (buffer.byteLength > MAX_FILE_BYTES) {
+          throw new ToolExecutionError(
+            `refusing to edit "${args.file_path}": existing file is ${buffer.byteLength} bytes, exceeding the ${MAX_FILE_BYTES}-byte limit`,
+          )
+        }
+        ensureNotBinaryOrThrow(buffer, args.file_path)
+        previousContent = buffer.toString('utf8')
+        previousHash = contentHash(previousContent)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        // 文件不存在——把它当成"从空内容开始编辑"，previousContent/previousHash 保持 null。
+      }
+
+      if (previousContent === null) {
+        if (args.expectedHash !== undefined) {
+          throw new ToolExecutionError(
+            `"${args.file_path}" does not exist yet; omit expectedHash to create it (do not guess a hash for a file you haven't read)`,
+          )
+        }
+      } else if (args.expectedHash === undefined) {
+        throw new ToolExecutionError(
+          `"${args.file_path}" already exists; call read_file first and pass its contentHash as expectedHash before editing`,
+        )
+      } else if (args.expectedHash !== previousHash) {
+        throw new ToolExecutionError(
+          `"${args.file_path}" has changed since you last read it (expected ${args.expectedHash}, found ${previousHash}); re-read before editing`,
+        )
+      }
+
+      const newBuffer = Buffer.from(args.content, 'utf8')
+      if (newBuffer.byteLength > MAX_FILE_BYTES) {
+        throw new ToolExecutionError(
+          `refusing to write "${args.file_path}": new content is ${newBuffer.byteLength} bytes, exceeding the ${MAX_FILE_BYTES}-byte limit`,
+        )
+      }
+      ensureNotBinaryOrThrow(newBuffer, `${args.file_path} (new content)`)
+
+      const diff = simpleDiff(previousContent ?? '', args.content)
+
+      if (dryRun) {
+        return { path: args.file_path, dryRun: true, applied: false, diff, previousHash, newHash: null }
+      }
+
+      try {
+        writeFileAtomic(target, args.content)
+      } catch (error) {
+        throw new ToolExecutionError(`cannot write "${args.file_path}": ${(error as Error).message}`)
+      }
+      return { path: args.file_path, dryRun: false, applied: true, diff, previousHash, newHash: contentHash(args.content) }
+    },
+  }
 }
