@@ -161,3 +161,15 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/tools.test.ts` 新增 7 条（`edit_file` 创建/覆盖/dryRun/hash 不匹配/二进制拒绝），`tests/fs-tools-integration.test.ts`（新文件，7条）：symlink 逃逸（`read_file`/`edit_file`/workspace 内部的合法 symlink 三种情况）、超大文件、二进制文件、只读目录权限失败、以及一条贯穿 `read_file` → `edit_file` → `read_file` → 用旧 hash 再编辑一次的跨工具集成测试（验证 hash 真的在两次调用之间正确传递、并在成功编辑后正确轮换，不是分别测试两个工具各自都对）。
 
 至此 `pnpm test` 共 311 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day16：子进程与 Bash 执行
+
+第一次让 Agent 跑真正的操作系统进程，不再是相对可控的文件读写——命令可能永不退出、可能自己再 fork 出别的进程、可能疯狂往外吐数据。
+
+新增：
+- `src/tools/process-runner.ts`（新文件）—— `runProcess(spec, signal)`：真正 spawn 子进程的底层函数。`spawn(command, args)` 不用 `shell: true`，`argv` 数组原样传给 `execve()`，`;`/`|`/`$()` 只是字面字符，从设计上排除命令注入。`BoundedCollector` 收集 stdout/stderr：永远消费管道数据（防止管道写满导致子进程被操作系统阻塞卡死），超过 `maxOutputBytes` 后只丢弃不再保留，标记 `truncated`。`detached: true`（POSIX）让子进程成为新进程组的组长，超时/取消都用 `process.kill(-child.pid, 'SIGKILL')` 杀整个进程组，不只是 `child.pid` 这一个进程——防住子进程自己 fork 出的孙进程变成孤儿继续跑。
+- `src/tools/bash-tool.ts`（新文件）—— `createRunCommandTool(root)`：`run_command` 工具定义。`env` 是白名单（默认只有 `PATH` + 调用方显式传入的变量，不继承宿主进程 `process.env`）。`timeoutMs` 有调用方可请求的上限（60s），注册进 `ToolRegistry` 的 `timeoutMs` 故意设得更宽松——那只是"`runProcess()` 内部逻辑真的挂了"才会触发的安全网，真正杀进程靠 `runProcess()` 自己独立的超时/取消处理。`cwd` 复用 Day15 的 `resolveWithinRoot`。`run_command` 目前只在工具层存在，没有接入 `cli.ts` 的只读调查 Agent。
+- **一个值得记录的设计陷阱（不是踩出来的 bug，是提前发现并绕开的）**：Day4 的 `ToolRegistry` 超时机制（`Promise.race`）只会让外层 Promise 提前落空，不会取消/杀掉 `tool.execute()` 内部真正启动的子进程——如果 `run_command` 只依赖这层超时，会造成真实的操作系统进程泄漏。`runProcess()` 必须自己维护独立的 `setTimeout` 去调用 `process.kill()`。细节见 `modules/day16-subprocess-and-bash/study.md` 第3节。
+- `tests/process-runner.test.ts`（9条，底层故障注入）：输出洪水（bounded 且不卡死）、永不退出（超时杀掉）、fork 子进程（进程树被真正回收，用一个持续写 marker 文件的孙进程验证，不是猜的）、env 泄漏（宿主 secret 不会出现在子进程里）、取消竞态。`tests/run-command-tool.test.ts`（9条，工具层，含经过 `ToolRegistry` 的端到端验证）：参数校验、cwd 越界/不存在、env 白名单在工具层同样成立、内部超时远早于 registry 安全网触发、取消同时让外层调用落空和真正杀掉进程（marker 文件验证）。
+
+至此 `pnpm test` 共 329 条测试全绿，`pnpm typecheck` 无错误。
