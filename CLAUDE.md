@@ -1,10 +1,10 @@
 # 项目说明（给协作的 Claude 用）
 
-这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day18`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day18。
+这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day19`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day19。
 
 ## 项目当前进度（会过期，动手前先用 `git log`/`ls modules/` 核实）
 
-截至这次更新：Day1-18 全部完成——阶段一（Day1-7）、阶段二（Day8-14）已建完，阶段三（Day15-21，受控执行与人机协作）进行中，已完成 Day15（文件系统能力）、Day16（子进程与 Bash 执行）、Day17（后台任务 `JobRuntime`）、Day18（沙箱与最小权限：`CommandPolicy`、威胁模型文档、跨天红队回归），正按 `~/.claude/plans/stateless-swinging-kurzweil.md` 里定好的计划继续做 Day19-21（审批/凭据/里程碑三），`mini-harness/` 358 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。阶段三剩余 Day19-21 还没开始，根 `README.md` 里那部分还是原始大纲文本。
+截至这次更新：Day1-19 全部完成——阶段一（Day1-7）、阶段二（Day8-14）已建完，阶段三（Day15-21，受控执行与人机协作）进行中，已完成 Day15（文件系统能力）、Day16（子进程与 Bash 执行）、Day17（后台任务 `JobRuntime`）、Day18（沙箱与最小权限）、Day19（审批 `ApprovalStore`、权限预设，暂未接进 `runTurn`），正按 `~/.claude/plans/stateless-swinging-kurzweil.md` 里定好的计划继续做 Day20-21（凭据/里程碑三），`mini-harness/` 367 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。阶段三剩余 Day20-21 还没开始，根 `README.md` 里那部分还是原始大纲文本。
 
 如果要继续往下做新的一天，按已经跑顺的节奏来，不用每天都停下来找我确认：
 1. 先读现存代码（不要凭记忆假设，代码可能已经变了），设计这一天要在 `mini-harness/` 里加什么。

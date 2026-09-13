@@ -199,3 +199,14 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/red-team-regression.test.ts`（7条）—— 把原始大纲点名的5种红队场景（prompt injection 读密钥、shell 特性绕过、symlink 逃逸、网络外传、fork bomb）逐条重新验证一遍,大部分复用 Day15-17 已经验证过的机制,不是重复造轮子；网络外传那条测试故意写成"一条证明缺口真实存在 + 一条证明部分缓解确实生效"，对应威胁模型里"诚实记录缺口"的写法。
 
 至此 `pnpm test` 共 358 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day19：审批、权限预设与用户问答
+
+只交付 `ApprovalStore`/`UserInteractionRequest`/三个权限预设这几个独立机制，不改动 Day5 `runTurn`——真正接进循环留到 Day21 milestone。
+
+新增：
+- `src/core/approval.ts`（新文件）—— `UserInteractionRequest`：`question`/`choice`/`approval` 三种交互类型的封闭联合类型，不共用含糊的 yes/no（`assertNever` 兜底，跟 `StreamChunk`/`SessionEvent` 同一套手法）。`ApprovalStore`：`create()` 记录一次审批请求（`argsHash` 复用 Day15 `contentHash` 的乐观并发控制思路，绑定具体参数而不是泛泛的"继续"）；`consume()` 四个校验（nonce 存在/未消费/未过期/参数哈希匹配）分别对应原始大纲点名的重放、双击批准、过期回复、批准后换参数四种故障场景；只有全部校验通过才真正标记消费——参数不匹配这类失败不会顺带烧掉 nonce，留一次用正确参数重试的机会。
+- `src/core/permission-presets.ts`（新文件）—— `readonly`/`balanced`/`autonomous` 三个 preset，都吃一份显式的"哪些工具是只读的"集合（不靠猜工具命名规律），分别把非只读工具映射成 `deny`/`require-approval`/`auto-approve`。
+- `tests/approval.test.ts`（6条）、`tests/permission-presets.test.ts`（3条）：四种故障场景各一条回归测试，外加"参数不匹配不会连累后续正确重试"这条设计决定的专门验证。
+
+至此 `pnpm test` 共 367 条测试全绿，`pnpm typecheck` 无错误。
