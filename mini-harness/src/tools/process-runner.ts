@@ -35,6 +35,26 @@ export interface ProcessRunResult {
   readonly aborted: boolean
 }
 
+export interface OutputSnapshot {
+  readonly text: string
+  readonly truncated: boolean
+}
+
+/**
+ * 一个还在跑（或者刚跑完）的子进程句柄：`done` 跟旧版 `runProcess()` 的返回值一样，
+ * 是"跑完之后的最终结果"；`stdoutSnapshot()`/`stderrSnapshot()` 是新加的——不用等
+ * `done` resolve，随时可以问"现在为止收集到了什么"。Day17 的 `JobRuntime.poll()`
+ * 需要的正是这个"进行中也能看一眼"的能力，`runProcess()`（只关心最终结果）不需要。
+ */
+export interface ManagedProcess {
+  readonly pid: number | undefined
+  stdoutSnapshot(): OutputSnapshot
+  stderrSnapshot(): OutputSnapshot
+  readonly done: Promise<ProcessRunResult>
+  /** 跟超时/外部 abort 走的是同一条杀进程树逻辑——调用方主动喊停，语义上没有区别。 */
+  cancel(): void
+}
+
 /**
  * 有上限的输出收集器：只在还有余量时才真正保留字节，超限之后继续吸收并丢弃后续数据
  * （而不是不再读取管道）——子进程的 stdout/stderr 是有缓冲区上限的管道，如果没人读，
@@ -60,60 +80,65 @@ class BoundedCollector {
     this.truncated = true
   }
 
-  toString(): string {
-    return Buffer.concat(this.chunks).toString('utf8')
+  snapshot(): OutputSnapshot {
+    return { text: Buffer.concat(this.chunks).toString('utf8'), truncated: this.truncated }
   }
 }
 
 /**
- * 真正执行一次子进程调用。两条独立的"该收手了"信号——超时和外部取消——都必须能
- * 杀掉**整棵进程树**，不只是这一个进程：`detached: true`（POSIX 上）让子进程成为
- * 一个新进程组的组长，它自己再 fork 出来的孙进程默认还在同一个组里，`process.kill`
- * 传一个负的 pid 杀的是整个组，而不是只有 `child.pid` 这一个进程。如果只调用
- * `child.kill()`，一个自己再 fork 了后台进程的命令，子孙进程会变成孤儿继续跑
- * ——这正是 study.md 要讲的"fork 子进程"故障场景。
+ * 真正 spawn 一次子进程，返回一个"还没等待完成"的句柄。两条独立的"该收手了"
+ * 信号——超时和外部取消（现在还加了 `cancel()` 这第三条,三者共用同一套杀法）——
+ * 都必须能杀掉**整棵进程树**，不只是这一个进程：`detached: true`（POSIX 上）让
+ * 子进程成为一个新进程组的组长，它自己再 fork 出来的孙进程默认还在同一个组里，
+ * `process.kill` 传一个负的 pid 杀的是整个组，而不是只有 `child.pid` 这一个进程。
+ * 如果只调用 `child.kill()`，一个自己再 fork 了后台进程的命令，子孙进程会变成孤儿
+ * 继续跑——这正是 study.md 要讲的"fork 子进程"故障场景。
+ *
+ * `runProcess()`（Day16 原有的、唯一的入口）现在只是对这个函数的一层等待包装——
+ * 这是"深模块加新能力、不改已有窄接口"的一次实际演练：Day16 写的 18 条测试全部
+ * 只认 `runProcess()` 这一个函数签名，这次重构一行都不用碰它们。
  */
-export function runProcess(spec: SpawnSpec, signal: AbortSignal): Promise<ProcessRunResult> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(spec.command, spec.args, {
-      cwd: spec.cwd,
-      env: spec.env as NodeJS.ProcessEnv,
-      detached: process.platform !== 'win32',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+export function spawnManaged(spec: SpawnSpec, signal: AbortSignal): ManagedProcess {
+  const child = spawn(spec.command, spec.args, {
+    cwd: spec.cwd,
+    env: spec.env as NodeJS.ProcessEnv,
+    detached: process.platform !== 'win32',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
 
-    const stdout = new BoundedCollector(spec.maxOutputBytes)
-    const stderr = new BoundedCollector(spec.maxOutputBytes)
-    let timedOut = false
-    let aborted = false
-    let settled = false
+  const stdout = new BoundedCollector(spec.maxOutputBytes)
+  const stderr = new BoundedCollector(spec.maxOutputBytes)
+  let timedOut = false
+  let aborted = false
+  let settled = false
 
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk))
-    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk))
+  child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk))
+  child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk))
 
-    if (spec.stdin !== undefined) child.stdin?.write(spec.stdin)
-    child.stdin?.end()
+  if (spec.stdin !== undefined) child.stdin?.write(spec.stdin)
+  child.stdin?.end()
 
-    const killTree = (signalName: NodeJS.Signals): void => {
-      if (child.pid === undefined) return
-      try {
-        process.kill(process.platform === 'win32' ? child.pid : -child.pid, signalName)
-      } catch {
-        // 进程已经自己退出了：kill 一个不存在的 pid/进程组会抛 ESRCH，这是正常收尾路径。
-      }
+  const killTree = (signalName: NodeJS.Signals): void => {
+    if (child.pid === undefined) return
+    try {
+      process.kill(process.platform === 'win32' ? child.pid : -child.pid, signalName)
+    } catch {
+      // 进程已经自己退出了：kill 一个不存在的 pid/进程组会抛 ESRCH，这是正常收尾路径。
     }
+  }
 
-    const timer = setTimeout(() => {
-      timedOut = true
-      killTree('SIGKILL')
-    }, spec.timeoutMs)
+  const timer = setTimeout(() => {
+    timedOut = true
+    killTree('SIGKILL')
+  }, spec.timeoutMs)
 
-    const onAbort = (): void => {
-      aborted = true
-      killTree('SIGKILL')
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
+  const onAbort = (): void => {
+    aborted = true
+    killTree('SIGKILL')
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
 
+  const done = new Promise<ProcessRunResult>((resolvePromise, reject) => {
     const settle = (fn: () => void): void => {
       if (settled) return
       settled = true
@@ -127,18 +152,35 @@ export function runProcess(spec: SpawnSpec, signal: AbortSignal): Promise<Proces
     // 'close'（不是 'exit'）：等 stdout/stderr 管道真正关闭、所有已经排队的 'data'
     // 事件都处理完了才触发，保证 resolve 时 stdout/stderr 已经是完整收集到的内容。
     child.on('close', (exitCode, procSignal) => {
-      settle(() =>
+      settle(() => {
+        const out = stdout.snapshot()
+        const err = stderr.snapshot()
         resolvePromise({
           exitCode,
           signal: procSignal,
-          stdout: stdout.toString(),
-          stderr: stderr.toString(),
-          stdoutTruncated: stdout.truncated,
-          stderrTruncated: stderr.truncated,
+          stdout: out.text,
+          stderr: err.text,
+          stdoutTruncated: out.truncated,
+          stderrTruncated: err.truncated,
           timedOut,
           aborted,
-        }),
-      )
+        })
+      })
     })
   })
+
+  return {
+    pid: child.pid,
+    stdoutSnapshot: () => stdout.snapshot(),
+    stderrSnapshot: () => stderr.snapshot(),
+    done,
+    cancel: () => {
+      aborted = true
+      killTree('SIGKILL')
+    },
+  }
+}
+
+export function runProcess(spec: SpawnSpec, signal: AbortSignal): Promise<ProcessRunResult> {
+  return spawnManaged(spec, signal).done
 }

@@ -173,3 +173,16 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/process-runner.test.ts`（9条，底层故障注入）：输出洪水（bounded 且不卡死）、永不退出（超时杀掉）、fork 子进程（进程树被真正回收，用一个持续写 marker 文件的孙进程验证，不是猜的）、env 泄漏（宿主 secret 不会出现在子进程里）、取消竞态。`tests/run-command-tool.test.ts`（9条，工具层，含经过 `ToolRegistry` 的端到端验证）：参数校验、cwd 越界/不存在、env 白名单在工具层同样成立、内部超时远早于 registry 安全网触发、取消同时让外层调用落空和真正杀掉进程（marker 文件验证）。
 
 至此 `pnpm test` 共 329 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day17：PTY、后台任务与资源所有权
+
+不做真正的 PTY（原始大纲标注"选做"，`node-pty` 这类原生依赖跟项目零原生依赖的定位不符）。核心是引入一种跟"工具调用"完全不同形状的生命周期——后台任务。
+
+新增：
+- `src/tools/process-runner.ts` —— 重构出 `spawnManaged(spec, signal): ManagedProcess`：立刻返回一个句柄（`stdoutSnapshot()`/`stderrSnapshot()` 可以在跑完之前随时读取当前输出、`done` 跟旧版一样是最终结果、`cancel()` 复用同一套杀进程树逻辑），`runProcess()`（Day16 原有的唯一入口）退化成 `return spawnManaged(spec, signal).done` 这一行。Day16 写的 18 条测试全部只认 `runProcess()` 这一个签名,一行没改、全部保持通过——验证了"深模块加新能力不改窄接口"这条原则。
+- `src/core/job-runtime.ts`（新文件）—— `JobRuntime`：`start(spec)` 立刻返回 jobId 不等待完成；`poll(jobId)` 返回有界快照（复用 `spawnManaged` 的实时读取能力）；`cancel()` 对不存在的 id 抛 `JobNotFoundError`（调用方记错 id 是 bug，值得暴露），`dispose()` 对不存在的 id 是安静的 no-op（幂等释放，跟 Day6 `Agent.dispose()` 同一套心智模型），对还在跑的 Job `dispose()` 会先杀掉再清理记录（"创建者拥有清理责任"）。
+- `src/tools/job-tools.ts`（新文件）—— `start_job`/`job_status`/`cancel_job` 三个工具，不接入 `cli.ts`。
+- **诚实的设计边界**：`JobRuntime` 状态只在内存里，不持久化进 Session 日志——进程重启后没有"可恢复的 Job"，只有"已失联的 Job"。study.md 第4节给出了如果要做真正可恢复 Job 需要往哪个方向设计（持久化 `SpawnSpec`+pid、重启时探活），但明确没有实现，属于当前范围内的 YAGNI。
+- `tests/job-runtime.test.ts`（8条）、`tests/job-tools.test.ts`（6条）：`start()` 不阻塞、终态只出现一次、`cancel()`/`dispose()` 真正杀掉进程树（marker 文件验证，不是猜的）、幂等语义、经过 `ToolRegistry` 的端到端验证。
+
+至此 `pnpm test` 共 343 条测试全绿，`pnpm typecheck` 无错误。
