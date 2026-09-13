@@ -186,3 +186,16 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/job-runtime.test.ts`（8条）、`tests/job-tools.test.ts`（6条）：`start()` 不阻塞、终态只出现一次、`cancel()`/`dispose()` 真正杀掉进程树（marker 文件验证，不是猜的）、幂等语义、经过 `ToolRegistry` 的端到端验证。
 
 至此 `pnpm test` 共 343 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day18：沙箱与最小权限
+
+不做真正的 OS 级沙箱（容器/网络 namespace 超出项目零外部运行时依赖的定位，原始大纲自己也承认 DSH 的 sandbox seam 不覆盖网络/进程可见性）。真做的是策略/执行分离、fail-closed、书面威胁模型、跨天红队回归。
+
+新增：
+- `src/tools/command-policy.ts`（新文件）—— `CommandPolicy` 接口（纯判断，不碰 I/O）、`AllowlistCommandPolicy`、`FailClosedCommandPolicy`（策略求值本身抛异常时拒绝而不是默认放行）。
+- `bash-tool.ts`/`job-tools.ts` 的 `createRunCommandTool`/`createStartJobTool`/`createJobTools` 新增可选的 `policy` 参数,在真正 resolve 路径/spawn 之前先过一遍策略。没传策略时行为不变（今天默认关闭，接进去才生效）。
+- `modules/day18-sandbox-and-least-privilege/threat-model.md`（新文档）—— 资产/信任边界/攻击者/入口点/影响/缓解措施六段式威胁模型，覆盖 Day15-17 的执行类能力。明确把"网络外传"标为**接受的缺口**（`CommandPolicy` 挡得住"不许跑 curl"，挡不住"被允许的 node 脚本自己发网络请求"），不假装解决。
+- `tests/command-policy.test.ts`（3条）、`tests/command-policy-integration.test.ts`（5条）：策略类本身的单元测试 + 真正接进 `ToolRegistry.execute()` 全流程的集成测试（两者验证的层次不同,见 exercise 任务1的对比）。
+- `tests/red-team-regression.test.ts`（7条）—— 把原始大纲点名的5种红队场景（prompt injection 读密钥、shell 特性绕过、symlink 逃逸、网络外传、fork bomb）逐条重新验证一遍,大部分复用 Day15-17 已经验证过的机制,不是重复造轮子；网络外传那条测试故意写成"一条证明缺口真实存在 + 一条证明部分缓解确实生效"，对应威胁模型里"诚实记录缺口"的写法。
+
+至此 `pnpm test` 共 358 条测试全绿，`pnpm typecheck` 无错误。

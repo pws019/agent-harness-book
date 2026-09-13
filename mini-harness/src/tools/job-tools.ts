@@ -1,5 +1,6 @@
 import { existsSync, statSync } from 'node:fs'
 import { JobNotFoundError, JobRuntime, type JobStatus } from '../core/job-runtime.js'
+import type { CommandPolicy } from './command-policy.js'
 import { ToolExecutionError, type ToolDefinition } from './types.js'
 import { PathEscapeError, resolveWithinRoot } from './workspace.js'
 
@@ -37,7 +38,7 @@ interface StartJobValue {
   readonly jobId: string
 }
 
-export function createStartJobTool(root: string, runtime: JobRuntime): ToolDefinition<StartJobValue> {
+export function createStartJobTool(root: string, runtime: JobRuntime, policy?: CommandPolicy): ToolDefinition<StartJobValue> {
   return {
     name: 'start_job',
     description:
@@ -66,6 +67,10 @@ export function createStartJobTool(root: string, runtime: JobRuntime): ToolDefin
       const requestedTimeout = args.timeoutMs ?? DEFAULT_TIMEOUT_MS
       if (requestedTimeout > MAX_TIMEOUT_MS) {
         throw new ToolExecutionError(`timeoutMs ${requestedTimeout} exceeds the ${MAX_TIMEOUT_MS}ms cap`)
+      }
+
+      if (policy && !policy.isAllowed(args.command)) {
+        throw new ToolExecutionError(`command "${args.command}" is not allowed by the current command policy`)
       }
 
       let cwd: string
@@ -198,9 +203,9 @@ export function createCancelJobTool(runtime: JobRuntime): ToolDefinition<CancelJ
   }
 }
 
-export function createJobTools(root: string, runtime: JobRuntime): readonly ToolDefinition<unknown>[] {
+export function createJobTools(root: string, runtime: JobRuntime, policy?: CommandPolicy): readonly ToolDefinition<unknown>[] {
   return [
-    createStartJobTool(root, runtime) as ToolDefinition<unknown>,
+    createStartJobTool(root, runtime, policy) as ToolDefinition<unknown>,
     createJobStatusTool(runtime) as ToolDefinition<unknown>,
     createCancelJobTool(runtime) as ToolDefinition<unknown>,
   ]

@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'node:fs'
+import type { CommandPolicy } from './command-policy.js'
 import { runProcess } from './process-runner.js'
 import { ToolExecutionError, type ToolDefinition } from './types.js'
 import { PathEscapeError, resolveWithinRoot } from './workspace.js'
@@ -34,7 +35,7 @@ interface RunCommandValue {
   readonly aborted: boolean
 }
 
-export function createRunCommandTool(root: string): ToolDefinition<RunCommandValue> {
+export function createRunCommandTool(root: string, policy?: CommandPolicy): ToolDefinition<RunCommandValue> {
   return {
     name: 'run_command',
     description:
@@ -100,6 +101,12 @@ export function createRunCommandTool(root: string): ToolDefinition<RunCommandVal
       const requestedTimeout = args.timeoutMs ?? DEFAULT_TIMEOUT_MS
       if (requestedTimeout > MAX_TIMEOUT_MS) {
         throw new ToolExecutionError(`timeoutMs ${requestedTimeout} exceeds the ${MAX_TIMEOUT_MS}ms cap`)
+      }
+
+      // 策略判断在这里被强制执行：没有策略就是"不限制"（今天默认关闭，接进去才生效），
+      // 有策略但说不允许，直接拒绝——不会因为策略之外还有别的理由想放行就绕过去。
+      if (policy && !policy.isAllowed(args.command)) {
+        throw new ToolExecutionError(`command "${args.command}" is not allowed by the current command policy`)
       }
 
       let cwd: string
