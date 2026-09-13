@@ -13,12 +13,20 @@ export interface SessionProjection {
   readonly toolCallCount: number
   readonly toolCallCountByName: Readonly<Record<string, number>>
   readonly lastStopReason: TurnEndReason | undefined
+  /**
+   * 倒数第二个 turn 的收尾原因——不是"历史上是否出现过 cancelled"，是"紧挨着当前
+   * 这个已完成 turn 之前的那个 turn，是不是被 `closeDanglingActivity` 收尾的"。
+   * 崩溃后重跑会紧接着把新 turn 跑完，所以 `lastStopReason` 几乎总是新 turn 的
+   * `completed`，真正带着"上一次崩溃过"这个信号的是这一个字段。
+   */
+  readonly previousStopReason: TurnEndReason | undefined
 }
 
 export function projectSummary(events: readonly SessionEvent[]): SessionProjection {
   let turnCount = 0
   let toolCallCount = 0
   const toolCallCountByName: Record<string, number> = {}
+  let previousStopReason: TurnEndReason | undefined
   let lastStopReason: TurnEndReason | undefined
 
   for (const event of events) {
@@ -31,6 +39,7 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
         toolCallCountByName[event.name] = (toolCallCountByName[event.name] ?? 0) + 1
         break
       case 'turn/end':
+        previousStopReason = lastStopReason
         lastStopReason = event.reason
         break
       case 'step/start':
@@ -47,7 +56,7 @@ export function projectSummary(events: readonly SessionEvent[]): SessionProjecti
         assertNeverEvent(event)
     }
   }
-  return { turnCount, toolCallCount, toolCallCountByName, lastStopReason }
+  return { turnCount, toolCallCount, toolCallCountByName, previousStopReason, lastStopReason }
 }
 
 function assertNeverEvent(event: never): never {

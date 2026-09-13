@@ -32,6 +32,7 @@ describe('projectSummary', () => {
       turnCount: 2,
       toolCallCount: 2,
       toolCallCountByName: { list_files: 1, search_text: 1 },
+      previousStopReason: { kind: 'completed' },
       lastStopReason: { kind: 'cancelled' },
     })
   })
@@ -41,8 +42,28 @@ describe('projectSummary', () => {
       turnCount: 0,
       toolCallCount: 0,
       toolCallCountByName: {},
+      previousStopReason: undefined,
       lastStopReason: undefined,
     })
+  })
+
+  it('previousStopReason surfaces a crash even after the recovery turn completes normally', () => {
+    // 真实场景：turn 1 崩溃、closeDanglingActivity 补写 cancelled，紧接着同一次进程调用
+    // 里的新 turn 2 正常跑完——这时 lastStopReason 已经是 completed，看不出崩溃过；
+    // 只有 previousStopReason（倒数第二个 turn/end）还留着 cancelled 这个痕迹。
+    const session = new Session()
+    session.append('turn/start', { turn: 0 })
+    session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+
+    session.append('turn/start', { turn: 1 })
+    session.append('turn/end', { turn: 1, reason: { kind: 'cancelled' } })
+
+    session.append('turn/start', { turn: 2 })
+    session.append('turn/end', { turn: 2, reason: { kind: 'completed' } })
+
+    const summary = projectSummary(session.events)
+    expect(summary.lastStopReason).toEqual({ kind: 'completed' })
+    expect(summary.previousStopReason).toEqual({ kind: 'cancelled' })
   })
 
   it('toolCallCount is the unnamed total, independent of how many distinct tool names appear', () => {

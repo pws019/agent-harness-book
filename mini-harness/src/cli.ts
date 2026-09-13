@@ -132,6 +132,9 @@ function inspectSession(path: string): void {
   console.log(`title: ${title ? `"${title.title}" (from seq ${title.sourceSeq})` : '(no user message yet)'}`)
   console.log(`turns: ${summary.turnCount}`)
   console.log(`last stop reason: ${summary.lastStopReason ? JSON.stringify(summary.lastStopReason) : '(turn still open)'}`)
+  if (summary.previousStopReason?.kind === 'cancelled') {
+    console.log('这份会话上一次是被中断的（可能是进程崩溃），最新一轮调查已经补上了')
+  }
   console.log(`tool calls by name: ${JSON.stringify(summary.toolCallCountByName)}`)
   console.log(`total events on disk: ${events.length}`)
 }
