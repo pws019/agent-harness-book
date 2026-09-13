@@ -23,7 +23,7 @@ agent-study/
 
 **推荐阅读顺序**：先扫一眼 [modules/day00-phase1-overview/](modules/day00-phase1-overview/)（阶段一全貌地图，不含练习，现在看不懂大部分术语是正常的），再打开 `modules/day01-.../README.md` 跟着往下走。每天：先读 `study.md` 建立心智模型 → 看 `mini-harness/` 里对应的代码 → 做 `exercise.md` 的练习 → 跑 `pnpm test` 验证。学到中途觉得"看细节看到出不来"的时候，随时回 Day0 那张地图对一遍——这正是它存在的目的。
 
-**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day19`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
+**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day20`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
 
 ## 学习建议
 
@@ -33,7 +33,7 @@ agent-study/
 
 日常用法：想知道"Day12 到底改了哪些代码"，直接在这棵树里找到 `feat(day12): ...` 那次提交点开就行，比 `git diff day11..day12` 更直观——尤其是想同时看清"这一天动了几个 `src/` 文件、几个测试、文档改没改"这种概览时，树状展开比一大坨 diff 文本更快扫一眼看懂。
 
-## 目前进度：阶段一、阶段二已完成，阶段三进行中（Day1-19）
+## 目前进度：阶段一、阶段二已完成，阶段三进行中（Day1-20）
 
 | 天 | 主题 | 目录 |
 |---|---|---|
@@ -58,8 +58,9 @@ agent-study/
 | 17 | PTY、后台任务与资源所有权 | [modules/day17-jobs-and-resource-ownership/](modules/day17-jobs-and-resource-ownership/) |
 | 18 | 沙箱与最小权限 | [modules/day18-sandbox-and-least-privilege/](modules/day18-sandbox-and-least-privilege/) |
 | 19 | 审批、权限预设与用户问答 | [modules/day19-approval-and-permissions/](modules/day19-approval-and-permissions/) |
+| 20 | 凭据、设置、存储与工作区 | [modules/day20-credentials-settings-workspace/](modules/day20-credentials-settings-workspace/) |
 
-跑完 Day1-19，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词> --session-file <路径>`，支持崩溃后从同一份文件恢复），以及独立于 CLI 之外、工具层已经具备的写文件能力（`edit_file`，带 symlink 逃逸防护和乐观并发控制）、子进程执行能力（`run_command`，argv 数组不经过 shell、env 白名单、超时/取消杀整棵进程树）、后台任务能力（`start_job`/`job_status`/`cancel_job`，跨多次调用追踪一个还在跑的子进程，幂等释放）、命令策略（`CommandPolicy`，白名单+fail-closed）和审批机制（`ApprovalStore`，一次性、绑定具体参数，防重放/防换参数/防过期）。现在共 367 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复、投影/查询/标题派生、系统提示词组装、Token 计量与预算、上下文压缩、文件系统路径逃逸与并发写冲突、子进程故障注入（输出洪水/永不退出/fork 子进程/env 泄漏/取消竞态）、后台任务生命周期与幂等释放、跨天红队回归（prompt injection/shell 绕过/symlink 逃逸/网络外传/fork bomb）。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store、重复压缩产生互相重叠的区间、崩溃截断后续写把日志粘成乱码……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
+跑完 Day1-20，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词> --session-file <路径>`，支持崩溃后从同一份文件恢复），以及独立于 CLI 之外、工具层已经具备的写文件能力（`edit_file`，带 symlink 逃逸防护和乐观并发控制）、子进程执行能力（`run_command`，argv 数组不经过 shell、env 白名单、超时/取消杀整棵进程树）、后台任务能力（`start_job`/`job_status`/`cancel_job`，跨多次调用追踪一个还在跑的子进程，幂等释放）、命令策略（`CommandPolicy`，白名单+fail-closed）、审批机制（`ApprovalStore`，一次性、绑定具体参数，防重放/防换参数/防过期）和凭据/设置能力（`CredentialRef`/`CredentialStore` 只以不透明引用流动、`mergeSettings` 分层合并带来源、`WorkspaceContext` 让 `run_command` 能安全注入凭据而不经过模型）。现在共 377 条测试，覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复、投影/查询/标题派生、系统提示词组装、Token 计量与预算、上下文压缩、文件系统路径逃逸与并发写冲突、子进程故障注入（输出洪水/永不退出/fork 子进程/env 泄漏/取消竞态）、后台任务生命周期与幂等释放、跨天红队回归（prompt injection/shell 绕过/symlink 逃逸/网络外传/fork bomb）、凭据引用不泄漏真实值与工作区凭据优先级。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store、重复压缩产生互相重叠的区间、崩溃截断后续写把日志粘成乱码……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。
 
 阶段一、二验证下来讲解风格没问题，阶段三（Day15-21）按同样的方式继续做。**下面是尚未做成白话教材的后续阶段大纲，作为路线图参考**，如果你想提前预习，仍然可以按原始大纲里的官方文档链接去读——但建议先等对应模块出来。
 
@@ -80,7 +81,7 @@ agent-study/
 
 ## 阶段 III～V：尚未做成白话教材的路线图（Day 15～30）
 
-以下内容保留自初版大纲，仍然是后续阶段的计划，但还没有经过"研究提炼 + 白话讲解 + 代码化"处理。读起来会比 Day1-19 的 `modules/` 吃力，仅供预习/参考。阶段 II（Day8-14）的原始大纲仍然保留在下面作为对照，但已经全部落地，实际内容请看 `modules/day08-*` 到 `modules/day14-*`，不要以下面这份原始大纲为准。
+以下内容保留自初版大纲，仍然是后续阶段的计划，但还没有经过"研究提炼 + 白话讲解 + 代码化"处理。读起来会比 Day1-20 的 `modules/` 吃力，仅供预习/参考。阶段 II（Day8-14）的原始大纲仍然保留在下面作为对照，但已经全部落地，实际内容请看 `modules/day08-*` 到 `modules/day14-*`，不要以下面这份原始大纲为准。
 
 ### 30 天总览
 
@@ -88,7 +89,7 @@ agent-study/
 |---|---:|---|---|
 | I. 最小但正确的内核 ✅ | 1～7 | Agent loop、流式模型、工具、生命周期 | 可测试的单 Agent CLI（已完成，见 `modules/`） |
 | II. 可回放的状态与上下文 ✅ | 8～14 | 事件溯源、持久化、投影、Token、压缩 | 可崩溃恢复的会话系统（已完成，见 `modules/`） |
-| III. 受控执行与人机协作（进行中，Day15-19 已完成） | 15～21 | 文件/进程/后台任务、审批、沙箱、凭据 | 安全的执行型 Agent |
+| III. 受控执行与人机协作（进行中，Day15-20 已完成） | 15～21 | 文件/进程/后台任务、审批、沙箱、凭据 | 安全的执行型 Agent |
 | IV. 平台化与编排 | 22～27 | API、Client、skills、goal、subagent、workflow | 可远程使用的 MiniHarness |
 | V. 生产验证与毕业设计 | 28～30 | 遥测、评测、压力、混沌、安全与架构评审 | 企业级设计包与演示 |
 
@@ -158,7 +159,7 @@ agent-study/
 
 **阶段门禁**：日志是唯一真源；崩溃恢复、未来版本拒绝、日志损坏均有稳定分类；能解释为什么"聊天记录数组 + 每次覆盖 JSON 文件"不足以支撑生产系统。
 
-### 阶段 III：受控执行与人机协作（Day 15～21）——**Day15-19 已完成，实际实现见 `modules/day15-filesystem-consistency/`、`modules/day16-subprocess-and-bash/`、`modules/day17-jobs-and-resource-ownership/`、`modules/day18-sandbox-and-least-privilege/`、`modules/day19-approval-and-permissions/`；Day20-21 是原始大纲，尚未落地**
+### 阶段 III：受控执行与人机协作（Day 15～21）——**Day15-20 已完成，实际实现见 `modules/day15-filesystem-consistency/`、`modules/day16-subprocess-and-bash/`、`modules/day17-jobs-and-resource-ownership/`、`modules/day18-sandbox-and-least-privilege/`、`modules/day19-approval-and-permissions/`、`modules/day20-credentials-settings-workspace/`；Day21 是原始大纲，尚未落地**
 
 <details>
 <summary>展开 Day15-21 详情</summary>
@@ -220,6 +221,8 @@ agent-study/
 **故障注入**：重放批准、批准后换参数、双击批准、过期回复、断线后回复。
 
 **验收**：审批是一次性可审计能力令牌，不是聊天里的一句"可以"；拒绝或超时不会被解释成执行成功。
+
+以下是初版大纲的原始描述，保留作参考对照；实际怎么落地的、跟原始大纲哪里不一样（"domain storage 与 session event log 分开"这一项没有单独做——今天没有引入新的存储子系统，`CredentialStore`/`mergeSettings` 都是纯内存实现，跟 Day9 已有的 Session 持久化是两条独立的线；"切换 workspace 后文件权限、凭据、会话查询范围同步变化"这个验收目标缩小了范围——今天只做了 `run_command` 一个工具接入 `WorkspaceContext.envCredentials` 的示范，没有对 `edit_file`/查询类工具做同样的重构，理由见 [modules/day20-credentials-settings-workspace/study.md](modules/day20-credentials-settings-workspace/study.md) 第3节),请看 [modules/day20-credentials-settings-workspace/study.md](modules/day20-credentials-settings-workspace/study.md)，不要以下面这份原始大纲为准。
 
 #### Day 20：凭据、设置、存储与工作区
 
@@ -364,7 +367,7 @@ agent-study/
 
 ## 每天固定执行的学习闭环
 
-Day1-19 的 `modules/` 已经把这套流程内化进了 `study.md`/`exercise.md` 的结构里；Day20 起如果你想自己先预习，也建议按这条闭环走：
+Day1-20 的 `modules/` 已经把这套流程内化进了 `study.md`/`exercise.md` 的结构里；Day21 起如果你想自己先预习，也建议按这条闭环走：
 
 1. **预测**：阅读前先写下你认为该子系统解决的问题。
 2. **阅读**：读 Reference 的概念段、关键类型、不变式和失败语义。
@@ -408,7 +411,7 @@ DSH 是快速迭代中的 developer preview，官方明确提醒存在兼容性�
 - 不要因为有 subagent/workflow 就使用它们。只有隔离、并行或专业化收益超过成本时才启用。
 - 不要把模型输出当授权、事务结果或事实真源。
 
-## 进一步阅读与源码阅读方法（Day20 起适用）
+## 进一步阅读与源码阅读方法（Day21 起适用）
 
 主资料只使用 DSH 官方来源（真实项目，已核实存在）：
 

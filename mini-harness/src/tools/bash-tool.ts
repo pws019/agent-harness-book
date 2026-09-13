@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'node:fs'
+import type { WorkspaceContext } from '../core/workspace-context.js'
 import type { CommandPolicy } from './command-policy.js'
 import { runProcess } from './process-runner.js'
 import { ToolExecutionError, type ToolDefinition } from './types.js'
@@ -35,7 +36,7 @@ interface RunCommandValue {
   readonly aborted: boolean
 }
 
-export function createRunCommandTool(root: string, policy?: CommandPolicy): ToolDefinition<RunCommandValue> {
+export function createRunCommandTool(root: string, policy?: CommandPolicy, workspace?: WorkspaceContext): ToolDefinition<RunCommandValue> {
   return {
     name: 'run_command',
     description:
@@ -124,6 +125,16 @@ export function createRunCommandTool(root: string, policy?: CommandPolicy): Tool
       // `process.env` 里别的一切——包括调用这个工具的 Agent 进程自己持有的任何
       // secret——默认不会出现在子进程里，不需要一份"危险变量黑名单"去过滤。
       const env: Record<string, string> = { PATH: process.env.PATH ?? '', ...(args.env ?? {}) }
+
+      // workspace 预先配置好的凭据（Day20）：解析真实值的时机就在这里、这一刻——
+      // 模型的 args 里从来没出现过真实密钥,只是 workspace 自己决定"这次调用该带上
+      // 哪些凭据"。放在 args.env 之后合并，故意让它能覆盖模型自己传的同名变量——
+      // 模型不能通过传一个同名的 env 字段去覆盖/顶替 workspace 配置好的凭据。
+      if (workspace?.envCredentials) {
+        for (const [key, ref] of Object.entries(workspace.envCredentials)) {
+          env[key] = workspace.credentials.resolve(ref)
+        }
+      }
 
       const result = await runProcess(
         {

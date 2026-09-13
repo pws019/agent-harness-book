@@ -13,7 +13,7 @@ pnpm typecheck    # 类型检查
 
 ## 如何对照每天的进度
 
-每天的学习里程碑都会打一个 git tag（`day01` ~ `day19`）。如果你写练习时卡住了，想看"官方参考实现长什么样"，可以：
+每天的学习里程碑都会打一个 git tag（`day01` ~ `day20`）。如果你写练习时卡住了，想看"官方参考实现长什么样"，可以：
 
 ```bash
 git log --oneline --all --tags   # 看看有哪些里程碑
@@ -27,7 +27,7 @@ git checkout day04 -- mini-harness/src   # 只取出 Day4 结束时的代码状�
 
 - `src/llm/` —— 消息模型、流式组装、Adapter（Day2、Day3 引入）
 - `src/tools/` —— 工具注册表与执行管线（Day4 引入）、workspace 越界检测/hash/diff/原子写这类文件操作辅助与写工具 `edit_file`（Day15 引入）、子进程执行 `run_command`（Day16 引入）、后台任务工具 `start_job`/`job_status`/`cancel_job`（Day17 引入）、命令策略 `CommandPolicy`（Day18 引入）
-- `src/core/` —— Agent loop、生命周期与取消（Day5、Day6 引入）、事件日志与消息派生（Day8 引入）、持久化与崩溃恢复（Day9 引入）、投影/查询/标题/Spill（Day10 引入）、系统提示词（Day11 引入）、Token 计量与预算（Day12 引入）、上下文压缩（Day13 引入）、真实文件持久化（Day14 引入）、后台任务生命周期 `JobRuntime`（Day17 引入）、审批 `ApprovalStore` 与权限预设（Day19 引入）
+- `src/core/` —— Agent loop、生命周期与取消（Day5、Day6 引入）、事件日志与消息派生（Day8 引入）、持久化与崩溃恢复（Day9 引入）、投影/查询/标题/Spill（Day10 引入）、系统提示词（Day11 引入）、Token 计量与预算（Day12 引入）、上下文压缩（Day13 引入）、真实文件持久化（Day14 引入）、后台任务生命周期 `JobRuntime`（Day17 引入）、审批 `ApprovalStore` 与权限预设（Day19 引入）、凭据引用 `CredentialRef`/`CredentialStore`、分层设置 `mergeSettings`、`WorkspaceContext`（Day20 引入）
 - `tests/` —— 单元测试、场景测试、故障注入测试
 
 详细记录见 [CHANGELOG.md](./CHANGELOG.md)。

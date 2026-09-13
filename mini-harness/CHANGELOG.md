@@ -210,3 +210,16 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/approval.test.ts`（6条）、`tests/permission-presets.test.ts`（3条）：四种故障场景各一条回归测试，外加"参数不匹配不会连累后续正确重试"这条设计决定的专门验证。
 
 至此 `pnpm test` 共 367 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day20：凭据、设置、存储与工作区
+
+只做一个概念性的核心决定——凭据在系统里只以不透明引用流动、真实值只在使用点解析；不对已有 `createXTool(root: string)` 做全面的 Workspace 签名重构（机械改动、概念价值有限），只在 `run_command` 上做一次示范。
+
+新增：
+- `src/core/credentials.ts`（新文件）—— `CredentialRef`（`{id}`，不含真实值）、`CredentialStore` 接口、`InMemoryCredentialStore`。`resolve()` 查不到显式抛 `CredentialNotFoundError`，不返回 `undefined`/空字符串静默放过。
+- `src/core/settings.ts`（新文件）—— `mergeSettings(layers)`：后面的层覆盖前面的层，每个 key 的结果带 `source`（哪一层给的）。"某层没设置某 key"和"某层把这个 key 设成 falsy 值"天然靠 `Object.entries()` 只遍历真正存在的 key 区分开，没有额外写判断逻辑。
+- `src/core/workspace-context.ts`（新文件）—— `WorkspaceContext`：`{root, credentials, envCredentials?}`，把"工作区"从单纯的 cwd 字符串扩成身份/能力边界。
+- `bash-tool.ts` 的 `createRunCommandTool(root, policy?, workspace?)` 新增可选的 `workspace` 参数——`workspace.envCredentials` 在真正 spawn 前解析成真实值注入子进程环境，合并顺序故意放在 `args.env` 之后，让 workspace 配置的凭据能覆盖模型自己传的同名变量（模型不能靠传同名 env 顶替掉工作区凭据）。没传 `workspace` 时行为与之前完全一致。
+- `tests/credentials.test.ts`（3条）、`tests/settings.test.ts`（4条，含"falsy 值是真覆盖不是没设置"回归）、`tests/workspace-context-integration.test.ts`（3条，含"模型无法用同名变量顶替 workspace 凭据"的跨模块集成测试）。
+
+至此 `pnpm test` 共 377 条测试全绿，`pnpm typecheck` 无错误。
