@@ -223,3 +223,16 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/credentials.test.ts`（3条）、`tests/settings.test.ts`（4条，含"falsy 值是真覆盖不是没设置"回归）、`tests/workspace-context-integration.test.ts`（3条，含"模型无法用同名变量顶替 workspace 凭据"的跨模块集成测试）。
 
 至此 `pnpm test` 共 377 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day21：里程碑三——安全执行型 Agent
+
+阶段三收尾。不引入新概念，把 Day15-20 各自独立验证过的机制第一次真正串成一条能从 CLI 跑起来的链路。
+
+新增：
+- `src/propose-edit.ts`（新文件）—— `generateEditProposal()`：确定性查找替换生成新内容（Day7 `HeuristicInvestigationAdapter` 同款"用写死规则代替真实模型"思路）。`proposeEdit()`：读文件 → 生成提案 → `ApprovalStore.create()`（Day19）→ 按 `PermissionPreset`（Day19）决定是否需要人工确认 → 批准则 `consume()` 烧掉 nonce → 用 `ToolRegistry` 真正执行 `edit_file`（Day15）→ 有 `--verify-command` 就再执行一次 `run_command`（Day16，可选接 Day18 `CommandPolicy`）。文档注释里明确记录一个诚实缺口：`consume()` 发生在 `edit_file` 之前，两者之间的竞态会导致"批准已消费但写入失败、且不能重试同一个 nonce"，权衡取舍见 `modules/day21-milestone-secure-agent/README.md`。
+- `cli.ts` 新增 `propose-edit` 子命令，默认审批实现是真的读 stdin 问一句（`readline/promises`），`--preset readonly|balanced|autonomous` 接入 Day19 权限预设。手动跑过 `pnpm cli -- propose-edit`（批准/拒绝/两种 preset）确认命令行参数解析和交互流程真的可用，不是只有单元测试覆盖。
+- `tests/propose-edit.test.ts`（11条）—— 覆盖批准写入、拒绝不写入、无变更不生成审批请求、`autonomous`/`readonly` 两种 preset 各自的行为、验证命令成功/失败两种结果、以及"审批消费和落盘之间的竞态"这个诚实缺口的专门回归测试。
+- `modules/day21-milestone-secure-agent/security-test-index.md`（新文档）—— 25 条安全回归测试的跨天索引，逐条标注真实存在且已跑通的 file:line，覆盖路径逃逸/symlink/TOCTOU/子进程环境隔离/shell 注入/网络外传缺口/资源耗尽/fail-closed/取消杀进程/审批一次性/权限预设/凭据不泄漏/里程碑三集成 13 个分组，不是凭空新写的 25 条。
+- `modules/day21-milestone-secure-agent/incident-drill.md`（新文档）—— 一次假设的"自动化脚本被投毒、试图往 CI 配置里加数据外传命令"事件演练，走一遍发现/止血/复盘，用表格说明这次事件里权限预设、审批摘要展示、`expectedHash`、`CommandPolicy` 各自起到（或没起到）什么作用。
+
+至此 `pnpm test` 共 388 条测试全绿，`pnpm typecheck` 无错误。阶段三（Day15-21）全部完成。

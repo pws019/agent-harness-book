@@ -4,7 +4,7 @@
 
 ## 项目当前进度（会过期，动手前先用 `git log`/`ls modules/` 核实）
 
-截至这次更新：Day1-20 全部完成——阶段一（Day1-7）、阶段二（Day8-14）已建完，阶段三（Day15-21，受控执行与人机协作）进行中，已完成 Day15（文件系统能力）、Day16（子进程与 Bash 执行）、Day17（后台任务 `JobRuntime`）、Day18（沙箱与最小权限）、Day19（审批 `ApprovalStore`、权限预设，暂未接进 `runTurn`）、Day20（凭据 `CredentialRef`/`CredentialStore`、分层设置 `mergeSettings`、`WorkspaceContext`，`run_command` 接入 `envCredentials` 示范），正按 `~/.claude/plans/stateless-swinging-kurzweil.md` 里定好的计划继续做 Day21（里程碑三），`mini-harness/` 377 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。阶段三剩余 Day21 还没开始，根 `README.md` 里那部分还是原始大纲文本。
+截至这次更新：Day1-21 全部完成——阶段一（Day1-7）、阶段二（Day8-14）、阶段三（Day15-21，受控执行与人机协作）都已建完。阶段三：Day15（文件系统能力 `edit_file`）、Day16（子进程与 Bash 执行 `run_command`）、Day17（后台任务 `JobRuntime`）、Day18（沙箱与最小权限 `CommandPolicy`+威胁模型）、Day19（审批 `ApprovalStore`、权限预设）、Day20（凭据 `CredentialRef`/`CredentialStore`、分层设置 `mergeSettings`、`WorkspaceContext`）、Day21（里程碑三：`src/propose-edit.ts` 把前几天的机制串成 `cli.ts` 的 `propose-edit` 子命令，25 条安全测试索引，事故演练文档）。`mini-harness/` 388 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。30 天大纲里 Day22-30（阶段 IV/V：平台化编排、生产验证）还没开始，根 `README.md` 里那部分还是原始大纲文本，`~/.claude/plans/stateless-swinging-kurzweil.md` 里的 Day17-21 计划已经全部完成。
 
 如果要继续往下做新的一天，按已经跑顺的节奏来，不用每天都停下来找我确认：
 1. 先读现存代码（不要凭记忆假设，代码可能已经变了），设计这一天要在 `mini-harness/` 里加什么。

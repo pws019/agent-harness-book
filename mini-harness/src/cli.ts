@@ -1,13 +1,21 @@
+import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
 import { Agent, type TurnRecord } from './core/agent-handle.js'
+import { ApprovalStore, type ApprovalRequest } from './core/approval.js'
+import { createAutonomousPreset, createBalancedPreset, createReadonlyPreset, type PermissionPreset } from './core/permission-presets.js'
 import { FileRawStore, JsonlSessionStore } from './core/persistence.js'
 import { deriveMessages } from './core/session.js'
 import { deriveTitle, projectSummary } from './core/session-projection.js'
 import { HeuristicInvestigationAdapter } from './heuristic-adapter.js'
 import type { LlmAdapter } from './llm/adapter.js'
 import type { Message } from './llm/types.js'
+import { proposeEdit, type ProposeEditOutcome } from './propose-edit.js'
 import { createReadOnlyFsTools } from './tools/fs-tools.js'
 import { ToolRegistry } from './tools/registry.js'
+
+/** Day21：`propose-edit` 的 preset 只用来判断 `edit_file` 这一个动作,这份只读工具名单
+ * 跟 `createReadOnlyFsTools()` 实际注册的名字保持一致（Day4 引入的三个只读工具）。 */
+const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set(['read_file', 'list_files', 'search_text'])
 
 export interface CliArgs {
   readonly workspace: string
@@ -155,6 +163,95 @@ function replaySession(path: string): void {
   }
 }
 
+function presetByName(name: string | undefined): PermissionPreset | undefined {
+  switch (name) {
+    case undefined:
+      return undefined
+    case 'readonly':
+      return createReadonlyPreset(READ_ONLY_TOOL_NAMES)
+    case 'balanced':
+      return createBalancedPreset(READ_ONLY_TOOL_NAMES)
+    case 'autonomous':
+      return createAutonomousPreset()
+    default:
+      throw new Error(`unknown --preset "${name}" (expected readonly|balanced|autonomous)`)
+  }
+}
+
+/** 默认的人工审批实现：真的在终端里问一句。测试/脚本化场景应该直接给 `proposeEdit()`
+ * 传别的 `requestApproval` 回调，不需要伪造键盘输入。 */
+async function promptApproval(request: ApprovalRequest, diff: string): Promise<boolean> {
+  console.log(`\n--- approval requested: ${request.action} "${request.target}" (expires in ${Math.round((request.expiresAt - Date.now()) / 1000)}s) ---`)
+  console.log(diff)
+  const rl = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    const answer = await rl.question('approve? [y/N] ')
+    return answer.trim().toLowerCase() === 'y'
+  } finally {
+    rl.close()
+  }
+}
+
+function printProposeEditOutcome(outcome: ProposeEditOutcome): void {
+  switch (outcome.kind) {
+    case 'no-changes':
+      console.log('no changes: the --find text was not present in the file, nothing to do')
+      break
+    case 'denied':
+      console.log(`edit denied (nonce ${outcome.request.nonce}); nothing was written`)
+      console.log(outcome.diff)
+      break
+    case 'applied':
+      console.log(`edit applied, newHash: ${outcome.newHash}`)
+      console.log(outcome.diff)
+      if (outcome.verification) {
+        console.log(`\nverification ${outcome.verification.passed ? 'passed' : 'FAILED'} (exit code ${outcome.verification.exitCode})`)
+        console.log(outcome.verification.output)
+      }
+      break
+  }
+}
+
+/**
+ * 里程碑三：`pnpm cli -- propose-edit --workspace <dir> --file <path> --find <text> --replace <text>`。
+ * 把 Day15 `edit_file`、Day16 `run_command`、Day19 `ApprovalStore`/权限预设第一次接进一条
+ * 真实可跑的命令——细节见 `src/propose-edit.ts` 和 `modules/day21-milestone-secure-agent/study.md`。
+ */
+async function runProposeEditCommand(argv: readonly string[]): Promise<void> {
+  const get = (flag: string): string | undefined => {
+    const index = argv.indexOf(flag)
+    return index >= 0 ? argv[index + 1] : undefined
+  }
+  const workspace = resolve(get('--workspace') ?? process.cwd())
+  const file = get('--file')
+  const find = get('--find')
+  const replace = get('--replace')
+  if (!file || find === undefined || replace === undefined) {
+    throw new Error(
+      'usage: propose-edit --workspace <dir> --file <path> --find <text> --replace <text> ' +
+        '[--preset readonly|balanced|autonomous] [--verify-command <cmd>] [--verify-args "arg1 arg2"]',
+    )
+  }
+  const preset = presetByName(get('--preset'))
+  const verifyCommand = get('--verify-command')
+  const verifyArgsRaw = get('--verify-args')
+  const verify = verifyCommand ? { command: verifyCommand, args: verifyArgsRaw ? verifyArgsRaw.split(' ') : [] } : undefined
+
+  const outcome = await proposeEdit({
+    root: workspace,
+    filePath: file,
+    find,
+    replace,
+    approvalStore: new ApprovalStore(),
+    requestApproval: promptApproval,
+    preset,
+    verify,
+  })
+
+  printProposeEditOutcome(outcome)
+  if (outcome.kind !== 'applied') process.exitCode = 1
+}
+
 async function main(): Promise<void> {
   // pnpm cli -- <args> 有的版本会把这个 `--` 原样转发给 tsx（不像我们在 Day7 study.md
   // §0 讲的那样被吃掉），子命令判断必须先把它剥掉，不然 `argv[0]` 是 `'--'` 而不是
@@ -174,6 +271,10 @@ async function main(): Promise<void> {
     const path = argv[1]
     if (!path) throw new Error('usage: replay-session <path>')
     replaySession(path)
+    return
+  }
+  if (argv[0] === 'propose-edit') {
+    await runProposeEditCommand(argv.slice(1))
     return
   }
 
