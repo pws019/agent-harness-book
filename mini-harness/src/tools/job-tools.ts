@@ -109,6 +109,7 @@ interface JobStatusValue {
   readonly stderr: string
   readonly stdoutTruncated: boolean
   readonly stderrTruncated: boolean
+  readonly elapsedMs: number
 }
 
 export function createJobStatusTool(runtime: JobRuntime): ToolDefinition<JobStatusValue> {
@@ -125,7 +126,7 @@ export function createJobStatusTool(runtime: JobRuntime): ToolDefinition<JobStat
       schema: {
         type: 'object',
         additionalProperties: false,
-        required: ['jobId', 'status', 'stdout', 'stderr', 'stdoutTruncated', 'stderrTruncated'],
+        required: ['jobId', 'status', 'stdout', 'stderr', 'stdoutTruncated', 'stderrTruncated', 'elapsedMs'],
         properties: {
           jobId: { type: 'string' },
           status: { type: 'string' },
@@ -133,10 +134,11 @@ export function createJobStatusTool(runtime: JobRuntime): ToolDefinition<JobStat
           stderr: { type: 'string' },
           stdoutTruncated: { type: 'boolean' },
           stderrTruncated: { type: 'boolean' },
+          elapsedMs: { type: 'integer' },
         },
       },
       render: (_args, value) => {
-        const parts = [`${value.jobId}: ${value.status}`]
+        const parts = [`${value.jobId}: ${value.status} (elapsed ${value.elapsedMs}ms)`]
         if (value.stdout) parts.push(`stdout:\n${value.stdout}${value.stdoutTruncated ? '\n... [truncated]' : ''}`)
         if (value.stderr) parts.push(`stderr:\n${value.stderr}${value.stderrTruncated ? '\n... [truncated]' : ''}`)
         return parts.join('\n')
@@ -155,6 +157,7 @@ export function createJobStatusTool(runtime: JobRuntime): ToolDefinition<JobStat
           stderr: snapshot.stderr,
           stdoutTruncated: snapshot.stdoutTruncated,
           stderrTruncated: snapshot.stderrTruncated,
+          elapsedMs: snapshot.elapsedMs,
         }
       } catch (error) {
         return toToolError(error)

@@ -68,6 +68,32 @@ describe('JobRuntime: poll() reflects live progress, then a single terminal stat
   })
 })
 
+describe('JobRuntime: elapsedMs tracks running time, then freezes at the terminal moment', () => {
+  it('elapsedMs grows across successive poll() calls while the job is still running', async () => {
+    const runtime = new JobRuntime()
+    const id = runtime.start(spec({ args: ['-e', 'setInterval(() => {}, 1000)'] }))
+
+    const first = runtime.poll(id).elapsedMs
+    await new Promise((r) => setTimeout(r, 30))
+    const second = runtime.poll(id).elapsedMs
+
+    expect(second).toBeGreaterThan(first)
+    runtime.dispose(id)
+  })
+
+  it('elapsedMs is frozen once the job reaches a terminal state, not still counting up on later poll() calls', async () => {
+    const runtime = new JobRuntime()
+    const id = runtime.start(spec({ args: ['-e', 'console.log("done")'] }))
+    await waitUntil(() => runtime.poll(id).status.kind !== 'running')
+
+    const rightAfter = runtime.poll(id).elapsedMs
+    await new Promise((r) => setTimeout(r, 100))
+    const muchLater = runtime.poll(id).elapsedMs
+
+    expect(muchLater).toBe(rightAfter)
+  })
+})
+
 describe('JobRuntime: cancel() actually kills the underlying process tree', () => {
   it('a never-exiting job is truly dead after cancel(), verified via a marker file (not just the status flag)', async () => {
     const dir = makeTmpDir()

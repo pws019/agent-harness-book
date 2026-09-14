@@ -13,6 +13,7 @@ export interface JobSnapshot {
   readonly stderr: string
   readonly stdoutTruncated: boolean
   readonly stderrTruncated: boolean
+  readonly elapsedMs: number
 }
 
 export class JobNotFoundError extends Error {
@@ -25,7 +26,10 @@ export class JobNotFoundError extends Error {
 interface JobRecord {
   readonly controller: AbortController
   readonly process: ReturnType<typeof spawnManaged>
+  readonly startedAt: number
   status: JobStatus
+  /** 进入终态那一刻冻结的 Date.now()——一旦写入就不再变，poll() 用它代替"现在"来算 elapsedMs。 */
+  endedAt?: number
 }
 
 /**
@@ -45,7 +49,7 @@ export class JobRuntime {
     const id = `job-${this.nextId++}`
     const controller = new AbortController()
     const proc = spawnManaged(spec, controller.signal)
-    const record: JobRecord = { controller, process: proc, status: { kind: 'running' } }
+    const record: JobRecord = { controller, process: proc, startedAt: Date.now(), status: { kind: 'running' } }
     this.jobs.set(id, record)
 
     // 不 await：这正是"start() 立刻返回"的字面实现。跑完之后再回来更新这条记录的
@@ -55,9 +59,11 @@ export class JobRuntime {
         record.status = result.aborted
           ? { kind: 'cancelled' }
           : { kind: 'completed', exitCode: result.exitCode, signal: result.signal }
+        record.endedAt = Date.now()
       },
       (error: unknown) => {
         record.status = { kind: 'error', message: error instanceof Error ? error.message : String(error) }
+        record.endedAt = Date.now()
       },
     )
 
@@ -75,6 +81,7 @@ export class JobRuntime {
       stderr: stderr.text,
       stdoutTruncated: stdout.truncated,
       stderrTruncated: stderr.truncated,
+      elapsedMs: (record.endedAt ?? Date.now()) - record.startedAt,
     }
   }
 
