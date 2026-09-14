@@ -64,6 +64,55 @@ describe('fault injection: output flood is bounded, not silently dropped', () =>
   })
 })
 
+describe('fault injection: maxTotalOutputBytes caps stdout+stderr combined, not each independently', () => {
+  it('stdout alone hitting the combined cap gets truncated even though it never sees maxOutputBytes', async () => {
+    const result = await runProcess(
+      spec({
+        args: ['-e', 'for (let i = 0; i < 100000; i++) process.stdout.write("x".repeat(200))'],
+        maxOutputBytes: 1_000_000, // 故意留得很宽松，证明真正生效的是下面这个合计上限
+        maxTotalOutputBytes: 5_000,
+      }),
+      neverAborts(),
+    )
+    expect(result.stdout.length).toBe(5_000)
+    expect(result.stdoutTruncated).toBe(true)
+    expect(result.stderr.length).toBe(0)
+    expect(result.stderrTruncated).toBe(false) // stderr 什么都没写，自己没有超,不该被错误标记
+  })
+
+  it('stderr alone hitting the combined cap gets truncated the same way stdout does', async () => {
+    const result = await runProcess(
+      spec({
+        args: ['-e', 'for (let i = 0; i < 100000; i++) process.stderr.write("x".repeat(200))'],
+        maxOutputBytes: 1_000_000,
+        maxTotalOutputBytes: 5_000,
+      }),
+      neverAborts(),
+    )
+    expect(result.stderr.length).toBe(5_000)
+    expect(result.stderrTruncated).toBe(true)
+    expect(result.stdout.length).toBe(0)
+    expect(result.stdoutTruncated).toBe(false)
+  })
+
+  it('stdout and stderr writing alternately still add up against one shared quota, not 5000 bytes each', async () => {
+    const script = `
+      for (let i = 0; i < 100000; i++) {
+        process.stdout.write("a".repeat(100));
+        process.stderr.write("b".repeat(100));
+      }
+    `
+    const result = await runProcess(
+      spec({ args: ['-e', script], maxOutputBytes: 1_000_000, maxTotalOutputBytes: 5_000 }),
+      neverAborts(),
+    )
+    // 各自都被切了一刀，但加起来必须封顶在合计上限——不是各自都能吃到 5000。
+    expect(result.stdoutTruncated).toBe(true)
+    expect(result.stderrTruncated).toBe(true)
+    expect(result.stdout.length + result.stderr.length).toBe(5_000)
+  })
+})
+
 describe('fault injection: a process that never exits gets killed by the timeout', () => {
   it('resolves at the timeout instead of hanging forever, and marks timedOut', async () => {
     const start = Date.now()

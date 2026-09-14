@@ -236,3 +236,9 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `modules/day21-milestone-secure-agent/incident-drill.md`（新文档）—— 一次假设的"自动化脚本被投毒、试图往 CI 配置里加数据外传命令"事件演练，走一遍发现/止血/复盘，用表格说明这次事件里权限预设、审批摘要展示、`expectedHash`、`CommandPolicy` 各自起到（或没起到）什么作用。
 
 至此 `pnpm test` 共 388 条测试全绿，`pnpm typecheck` 无错误。阶段三（Day15-21）全部完成。
+
+## 增量补充：Day16 任务2 落地
+
+- **Day16 任务2**：`stdout`+`stderr` 合计输出上限。`SpawnSpec` 新增可选的 `maxTotalOutputBytes`；把原来 `BoundedCollector` 内部自己算余量的逻辑拆成一个独立的 `OutputBudget` 类（`spend(byteLength)` 返回实际允许写入的字节数），`BoundedCollector` 改成向外面传进来的 `OutputBudget` 要额度，不再自己持有 `maxBytes`——默认（没给 `maxTotalOutputBytes`）时 stdout/stderr 各自拿一个独立的 `OutputBudget` 实例（跟原来行为完全一致，Day16 原有 18 条测试不改一行、全部保持通过）；给了 `maxTotalOutputBytes` 之后，两者改成共享**同一个** `OutputBudget` 实例，谁先写谁先占额度，加起来封顶在合计上限（`process-runner.ts`、`process-runner.test.ts` +3 条：只有 stdout 写多、只有 stderr 写多、两边交替写）。
+
+至此 `pnpm test` 共 391 条测试全绿。

@@ -22,6 +22,11 @@ export interface SpawnSpec {
   readonly stdin?: string
   readonly timeoutMs: number
   readonly maxOutputBytes: number
+  /** 可选：stdout+stderr 合计的字节上限（Day16 exercise 任务2）。不给的话，两者
+   * 各自独立用 `maxOutputBytes` 做上限——一个命令理论上可以让两者加起来占用两倍
+   * 内存。给了之后，两个流共享同一份"剩余额度"，谁先写谁先占，用完了两边都会
+   * 被判定为 truncated，跟各自独立的 `maxOutputBytes` 互斥（生效时忽略后者）。 */
+  readonly maxTotalOutputBytes?: number
 }
 
 export interface ProcessRunResult {
@@ -56,6 +61,28 @@ export interface ManagedProcess {
 }
 
 /**
+ * 一份"还能再收留多少字节"的额度——`BoundedCollector` 不自己算余量，找 `OutputBudget`
+ * 要。这一层间接是"合计上限"（Day16 exercise 任务2）能够实现的关键：默认情况下
+ * stdout/stderr 各自持有**自己独立的一份** `OutputBudget` 实例；`maxTotalOutputBytes`
+ * 给了之后，两个 `BoundedCollector` 改成共享**同一个** `OutputBudget` 实例——谁先
+ * 调用 `spend()`，谁先把这份共享余量占掉，跟"额度是独立的还是共享的"这件事完全
+ * 由外面传的是不是同一个实例决定，`OutputBudget` 自己不需要知道被几个 collector
+ * 共用。
+ */
+class OutputBudget {
+  private bytes = 0
+  constructor(private readonly maxBytes: number) {}
+
+  /** 申请写入 `byteLength` 字节，返回实际允许写入的字节数（可能小于申请值，甚至是 0）。 */
+  spend(byteLength: number): number {
+    const room = Math.max(this.maxBytes - this.bytes, 0)
+    const allowed = Math.min(room, byteLength)
+    this.bytes += allowed
+    return allowed
+  }
+}
+
+/**
  * 有上限的输出收集器：只在还有余量时才真正保留字节，超限之后继续吸收并丢弃后续数据
  * （而不是不再读取管道）——子进程的 stdout/stderr 是有缓冲区上限的管道，如果没人读，
  * 缓冲区写满之后子进程自己会被操作系统阻塞在 write() 调用上，"输出洪水"反而会变成
@@ -63,21 +90,15 @@ export interface ManagedProcess {
  */
 class BoundedCollector {
   private readonly chunks: Buffer[] = []
-  private bytes = 0
   truncated = false
 
-  constructor(private readonly maxBytes: number) {}
+  constructor(private readonly budget: OutputBudget) {}
 
   push(chunk: Buffer): void {
     if (this.truncated) return
-    const room = this.maxBytes - this.bytes
-    if (chunk.byteLength <= room) {
-      this.chunks.push(chunk)
-      this.bytes += chunk.byteLength
-      return
-    }
-    if (room > 0) this.chunks.push(chunk.subarray(0, room))
-    this.truncated = true
+    const allowed = this.budget.spend(chunk.byteLength)
+    if (allowed > 0) this.chunks.push(allowed === chunk.byteLength ? chunk : chunk.subarray(0, allowed))
+    if (allowed < chunk.byteLength) this.truncated = true
   }
 
   snapshot(): OutputSnapshot {
@@ -106,8 +127,12 @@ export function spawnManaged(spec: SpawnSpec, signal: AbortSignal): ManagedProce
     stdio: ['pipe', 'pipe', 'pipe'],
   })
 
-  const stdout = new BoundedCollector(spec.maxOutputBytes)
-  const stderr = new BoundedCollector(spec.maxOutputBytes)
+  // maxTotalOutputBytes 给了就共享同一个 OutputBudget 实例（合计上限）；没给就
+  // 各自 new 一个独立实例——两种情况下 BoundedCollector/OutputBudget 的代码
+  // 完全不用分叉，区别只在于这里传的是不是同一个对象。
+  const sharedBudget = spec.maxTotalOutputBytes !== undefined ? new OutputBudget(spec.maxTotalOutputBytes) : undefined
+  const stdout = new BoundedCollector(sharedBudget ?? new OutputBudget(spec.maxOutputBytes))
+  const stderr = new BoundedCollector(sharedBudget ?? new OutputBudget(spec.maxOutputBytes))
   let timedOut = false
   let aborted = false
   let settled = false

@@ -38,23 +38,26 @@ Day4 的 `runWithTimeoutAndAbort()` 用 `Promise.race([work, timeoutPromise, abo
 
 **为什么会这样**：`detached: false` 时，`process.kill(-child.pid, sig)` 里的 `-child.pid` 引用的是一个**根本不存在的进程组**（`child.pid` 只是一个普通子进程的 pid，不是任何进程组的组长）。`process.kill` 对一个不存在的目标会抛 `ESRCH`，我们的 `killTree` 把这个异常当成"进程已经自己退出了，属于正常收尾"直接吞掉——所以不是"漏杀了孙进程"这么轻微的问题，是"整个杀进程的动作从一开始就没有生效"，父进程本身也在继续裸奔。这也解释了为什么 study.md §3 的真值表和 §0 的进程组前置知识要放在一起讲：`detached: true` + 负 pid 不是两个独立的技巧，负 pid 这个杀法**必须**建立在"这个子进程确实是一个进程组组长"这个前提上，两者是一套机制，改掉任何一半都会让另一半失效。
 
-## exercise.md 任务2：`stdout`+`stderr` 合计上限——设计方向
+## exercise.md 任务2：`stdout`+`stderr` 合计上限——已落地
 
-目前 `stdout`/`stderr` 各自独立持有一份 `maxOutputBytes` 额度，改成共享额度的关键是把"额度还剩多少"从"每个 `BoundedCollector` 各自内部维护"变成"两个 collector 共享同一份可变状态"：
+`SpawnSpec` 新增了可选的 `maxTotalOutputBytes`（[process-runner.ts:25-29](../../mini-harness/src/tools/process-runner.ts#L25-L29)）。实现的关键是把"额度还剩多少"从"每个 `BoundedCollector` 自己内部维护"拆成一个独立的 `OutputBudget` 类（[process-runner.ts:72-83](../../mini-harness/src/tools/process-runner.ts#L72-L83)）：
 
 ```ts
-class SharedBudget {
-  private remaining: number
-  constructor(maxTotalBytes: number) { this.remaining = maxTotalBytes }
-  take(bytes: number): number {           // 返回这次实际还能收多少字节
-    const allowed = Math.max(0, Math.min(bytes, this.remaining))
-    this.remaining -= allowed
+class OutputBudget {
+  private bytes = 0
+  constructor(private readonly maxBytes: number) {}
+  spend(byteLength: number): number {
+    const room = Math.max(this.maxBytes - this.bytes, 0)
+    const allowed = Math.min(room, byteLength)
+    this.bytes += allowed
     return allowed
   }
 }
 ```
 
-`BoundedCollector` 不再自己持有 `maxBytes`，改成持有一个 `SharedBudget` 引用，`push()` 里先问 `budget.take(chunk.byteLength)` 能拿到多少配额，只保留这一部分、超出部分丢弃并标记 `truncated`。`runProcess()` 里创建**一个** `SharedBudget` 实例，`stdout`/`stderr` 两个 `BoundedCollector` 都传入同一个实例——谁先写、写了多少，直接从共享池子里扣，另一路能用的额度相应变少。这跟 Day12 `TokenMeter` 的思路是同一类："累计"这件事只要被两个地方分别独立计数，就会算不准共享上限，必须让它们真正共享同一份状态,而不是各自维护一份、指望加起来对得上。
+`BoundedCollector` 不再自己持有 `maxBytes`，改成持有一个 `OutputBudget` 引用，`push()` 里先问 `budget.spend(chunk.byteLength)` 能拿到多少配额，只保留这一部分、超出部分丢弃并标记 `truncated`。真正决定"独立还是共享"的不是 `OutputBudget`/`BoundedCollector` 这两个类本身，是 `spawnManaged()` 里怎么构造它们（[process-runner.ts:133-135](../../mini-harness/src/tools/process-runner.ts#L133-L135)）：没给 `maxTotalOutputBytes` 时，`stdout`/`stderr` 各自拿一个独立的 `new OutputBudget(spec.maxOutputBytes)`（跟原来行为完全一致，Day16 原有 18 条测试一行没改、全部保持通过）；给了 `maxTotalOutputBytes` 之后，两者改成传入**同一个** `OutputBudget` 实例——谁先写、写了多少，直接从共享池子里扣，另一路能用的额度相应变少。这跟 Day12 `TokenMeter` 的思路是同一类："累计"这件事只要被两个地方分别独立计数，就会算不准共享上限，必须让它们真正共享同一份状态,而不是各自维护一份、指望加起来对得上。
+
+`tests/process-runner.test.ts` 新增3条测试验证（只有 stdout 写多、只有 stderr 写多、两边交替写）：交替写的那条断言 `result.stdout.length + result.stderr.length` 恰好等于 `maxTotalOutputBytes`，证明真正生效的是合计,不是"每边各能吃到一份 5000"。
 
 ## exercise.md 任务3：现在的参数够不够构成一段"看得懂、能判断"的审批描述
 
