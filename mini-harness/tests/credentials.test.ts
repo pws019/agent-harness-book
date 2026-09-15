@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { CredentialNotFoundError, InMemoryCredentialStore, type CredentialRef } from '../src/core/credentials.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CredentialNotFoundError, EnvCredentialStore, InMemoryCredentialStore, type CredentialRef } from '../src/core/credentials.js'
 import { isJsonValue } from '../src/core/session.js'
 
 describe('CredentialRef: safe to log, never carries the real value', () => {
@@ -20,5 +20,22 @@ describe('InMemoryCredentialStore', () => {
   it('resolving an unknown ref throws instead of returning undefined/empty', () => {
     const store = new InMemoryCredentialStore()
     expect(() => store.resolve({ id: 'no-such-credential' })).toThrow(CredentialNotFoundError)
+  })
+})
+
+describe('EnvCredentialStore', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('resolve() reads the value from process.env, keyed by ref.id verbatim (no prefix/case rewrite)', () => {
+    vi.stubEnv('MINI_HARNESS_TEST_CREDENTIAL', 'sk-from-host-env')
+    const store = new EnvCredentialStore()
+    expect(store.resolve({ id: 'MINI_HARNESS_TEST_CREDENTIAL' })).toBe('sk-from-host-env')
+  })
+
+  it('resolving an id with no matching environment variable throws instead of returning undefined/empty', () => {
+    const store = new EnvCredentialStore()
+    expect(() => store.resolve({ id: 'MINI_HARNESS_TEST_CREDENTIAL_DOES_NOT_EXIST' })).toThrow(CredentialNotFoundError)
   })
 })

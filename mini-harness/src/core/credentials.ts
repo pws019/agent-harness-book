@@ -34,3 +34,19 @@ export class InMemoryCredentialStore implements CredentialStore {
     return value
   }
 }
+
+/**
+ * 真实部署场景下最常见的凭据来源：运维在启动时把真实密钥设进宿主进程的
+ * `process.env`，不写进代码或配置文件。映射规则选最简单的直接对应——`ref.id`
+ * 本身就是环境变量名，不做任何前缀拼接或大小写转换。没有选"自动转大写"/"自动加
+ * 前缀"这类看起来更规整的映射，是因为环境变量名本身不是敏感信息（敏感的是它的
+ * 值），引入一层隐式转换规则只会让"这个 id 到底对应哪个环境变量"变成一件需要
+ * 额外记住一条换算规则才能确认的事——直接对应是唯一不需要文档就能看懂的映射。
+ */
+export class EnvCredentialStore implements CredentialStore {
+  resolve(ref: CredentialRef): string {
+    const value = process.env[ref.id]
+    if (value === undefined) throw new CredentialNotFoundError(ref.id)
+    return value
+  }
+}
