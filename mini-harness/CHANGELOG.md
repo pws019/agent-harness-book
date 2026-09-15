@@ -264,3 +264,17 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/wire-protocol` 相关：`tests/backlog-writer.test.ts`（4条）、`tests/idempotency-store.test.ts`（5条）、`tests/http-server.test.ts`（10条，真实临时端口 + 真实 socket，覆盖端到端流程/幂等去重/取消传播到真实 Agent/鉴权/backlog 超限/correlation id）。手动跑过一遍真实服务器（`curl` 起服务、发消息、看流式响应），不是只有单测覆盖。
 
 至此 `pnpm test` 共 419 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day23：Client model、Conversation 与重连语义
+
+站到 Day22 的客户端一侧：网络连接会断、会乱序、会重复投递——今天写"断了之后怎么正确接回去"。不写浏览器页面（没有浏览器测试基础设施），写一个终端 client（复用 `cli.ts` 已经在用的 `readline/promises` 模式）。
+
+新增：
+- `src/client/conversation.ts`（新文件）—— `Conversation`：用一个按 `SessionEvent.seq` 索引的 `Map` 天然去重/无视到达顺序，另加一个 `highestContiguousSeq` 指针专门挡"缺口"——`deriveMessages()`（Day8）要求连续完整的输入,提前到达但中间有洞的事件不会被错误地并入派生结果。`cursor` getter 返回的是"确认连续"的游标,不是"见过的最大 seq"。
+- `src/client/reconnecting-stream.ts`（新文件）—— `StreamConnector` 接口 + `runReconnectingStream()`：连接、把 envelope 喂给 `Conversation`、断线自动重连,直到真的收到 `terminal` 且游标追上 `lastSeq`。**真实踩到的坑**：第一版判断"能不能停"只看有没有收到 `terminal`,没检查游标是否真的追上——如果一次连接中途丢了一条不是最后一条的事件,`terminal` 依然会正常发出,但缺口永远补不上,导致 4/8 个故障注入种子测试失败。修复需要两处都改（`reconnecting-stream.ts` 校验 `cursor >= lastSeq`；`fault-injecting-transport.ts` 补上"客户端本来就已经追上、这次没有新内容要发"这种情况该不该发 `terminal` 的判断),改一处不够,详见 `modules/day23-client-and-reconnection/study.md` §4。
+- `src/client/fault-injecting-transport.ts`（新文件，仅测试用）—— 复用 Day2/3 `mulberry32` 种子 PRNG,对一份真实 `Agent` 跑出来的事件日志重放时故意制造缺口/重复/乱序/断线。
+- `src/client/http-stream-connector.ts`（新文件）—— `StreamConnector` 的真实实现,打 Day22 `GET /sessions/:id/events`,按行切分换行分隔 JSON。
+- `src/client/terminal-client.ts`（新文件）—— 终端客户端：`connectTerminalClient()`（核心逻辑,`onEnvelope` 钩子驱动 UI 更新,不用轮询）+ `runTerminalClientCli()`（真正给人手动跑的交互式入口）。跟 Day17/19 同一个纪律：不接进 `cli.ts` 子命令分发,新能力先独立验证完,见 Day27 里程碑。手动跑过一遍真实客户端连真实 Day22 服务器,确认端到端可用。
+- `tests/conversation.test.ts`（6条）、`tests/client-reconnection.test.ts`（10条，8个不同种子的故障注入收敛测试 + 2条边界测试：连续失败放弃、abort 立刻停止）。
+
+至此 `pnpm test` 共 435 条测试全绿，`pnpm typecheck` 无错误。
