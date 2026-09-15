@@ -46,15 +46,22 @@ export class ApprovalArgsMismatchError extends ApprovalError {
   }
 }
 
+export class ApprovalRevokedError extends ApprovalError {
+  constructor(nonce: string) {
+    super(`approval "${nonce}" was revoked before it could be consumed`)
+    this.name = 'ApprovalRevokedError'
+  }
+}
+
 /**
  * 一次性、可审计的能力令牌——不是聊天记录里的一句"可以"。`create()` 只负责记录
  * "允许执行什么、绑定哪组参数、什么时候过期"，不涉及"谁批准的"这类用户交互细节
  * （那是调用方——比如 Day21 milestone 里的 CLI——的事）。`consume()` 一次只能
- * 成功一次：nonce 不存在、已经被消费过、已经过期、参数对不上原来批准的那组,
- * 四个条件任何一个不满足都拒绝，且只在全部通过之后才真正标记为已消费。
+ * 成功一次：nonce 不存在、已经被消费过、已经被撤销、已经过期、参数对不上原来
+ * 批准的那组,五个条件任何一个不满足都拒绝，且只在全部通过之后才真正标记为已消费。
  */
 export class ApprovalStore {
-  private readonly requests = new Map<string, { readonly request: ApprovalRequest; consumed: boolean }>()
+  private readonly requests = new Map<string, { readonly request: ApprovalRequest; consumed: boolean; revoked: boolean }>()
   private nextId = 0
 
   create(action: string, target: string, argsSummary: string, args: unknown, ttlMs: number, now: number = Date.now()): ApprovalRequest {
@@ -67,7 +74,7 @@ export class ApprovalStore {
       argsHash: contentHash(JSON.stringify(args)),
       expiresAt: now + ttlMs,
     }
-    this.requests.set(nonce, { request, consumed: false })
+    this.requests.set(nonce, { request, consumed: false, revoked: false })
     return request
   }
 
@@ -80,9 +87,32 @@ export class ApprovalStore {
     const entry = this.requests.get(nonce)
     if (!entry) throw new ApprovalNotFoundError(nonce)
     if (entry.consumed) throw new ApprovalAlreadyConsumedError(nonce)
+    if (entry.revoked) throw new ApprovalRevokedError(nonce)
     if (now > entry.request.expiresAt) throw new ApprovalExpiredError(nonce)
     if (contentHash(JSON.stringify(args)) !== entry.request.argsHash) throw new ApprovalArgsMismatchError(nonce)
     entry.consumed = true
+  }
+
+  /**
+   * 主动撤销一个批准——比如用户点了批准之后又反悔了，或者上层逻辑发现情况变了、
+   * 这次批准不该再生效。一个 nonce 在任意时刻只可能处于下面四种状态之一，
+   * `revoke()` 对每一种的反应都不一样，不是统一抛错或统一 no-op：
+   *
+   * | nonce 状态                    | revoke() 的反应                     |
+   * |-------------------------------|--------------------------------------|
+   * | 不存在                         | 抛 `ApprovalNotFoundError`——调用方手里的 nonce 应该是真实的，不存在意味着记错了 id，是 bug 信号，跟 `consume()` 对未知 id 的态度一致 |
+   * | 待消费（未消费/未过期/未撤销）    | 标记为已撤销，成功返回                 |
+   * | 已消费                         | 抛 `ApprovalAlreadyConsumedError`——撤销一个已经真正执行过的高风险操作，"太晚了"这个事实本身值得让调用方知道，不能悄悄吞掉 |
+   * | 已过期                         | no-op，直接返回——`consume()` 反正会因为过期自己失败，撤销一个已经废了的请求不需要额外报错 |
+   * | 已撤销（重复调用）               | no-op，直接返回——撤销本身是幂等操作，跟 Day6 `Agent.dispose()`/Day17 `JobRuntime.dispose()` 是同一个心智模型 |
+   */
+  revoke(nonce: string, now: number = Date.now()): void {
+    const entry = this.requests.get(nonce)
+    if (!entry) throw new ApprovalNotFoundError(nonce)
+    if (entry.consumed) throw new ApprovalAlreadyConsumedError(nonce)
+    if (entry.revoked) return
+    if (now > entry.request.expiresAt) return
+    entry.revoked = true
   }
 }
 

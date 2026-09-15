@@ -4,6 +4,7 @@ import {
   ApprovalArgsMismatchError,
   ApprovalExpiredError,
   ApprovalNotFoundError,
+  ApprovalRevokedError,
   ApprovalStore,
 } from '../src/core/approval.js'
 
@@ -92,5 +93,49 @@ describe('未知 nonce', () => {
   it('consuming a nonce that was never created throws ApprovalNotFoundError', () => {
     const store = new ApprovalStore()
     expect(() => store.consume('never-existed', {})).toThrow(ApprovalNotFoundError)
+  })
+})
+
+describe('revoke(): 一张真值表覆盖 nonce 可能处于的四种状态', () => {
+  it('待消费：revoke() 之后，consume() 拒绝并抛 ApprovalRevokedError（不是 Expired/AlreadyConsumed）', () => {
+    const store = new ApprovalStore()
+    const args = { command: 'ls' }
+    const request = store.create('run_command', 'ls', 'list files', args, 60_000)
+
+    expect(() => store.revoke(request.nonce)).not.toThrow()
+    expect(() => store.consume(request.nonce, args)).toThrow(ApprovalRevokedError)
+  })
+
+  it('已消费：revoke() 拒绝并抛 ApprovalAlreadyConsumedError，不悄悄放过', () => {
+    const store = new ApprovalStore()
+    const args = { command: 'ls' }
+    const request = store.create('run_command', 'ls', 'list files', args, 60_000)
+    store.consume(request.nonce, args)
+
+    expect(() => store.revoke(request.nonce)).toThrow(ApprovalAlreadyConsumedError)
+  })
+
+  it('已过期：revoke() 是 no-op，不抛错——反正 consume() 本来就会因为过期失败', () => {
+    const store = new ApprovalStore()
+    const args = { command: 'ls' }
+    const now = 1_000_000
+    const request = store.create('run_command', 'ls', 'list files', args, 1_000, now)
+
+    expect(() => store.revoke(request.nonce, now + 1_500)).not.toThrow()
+    expect(() => store.consume(request.nonce, args, now + 1_500)).toThrow(ApprovalExpiredError) // 依然是 Expired，不是 Revoked
+  })
+
+  it('已撤销（重复调用）：第二次 revoke() 也是 no-op，不抛错——撤销本身是幂等的', () => {
+    const store = new ApprovalStore()
+    const args = { command: 'ls' }
+    const request = store.create('run_command', 'ls', 'list files', args, 60_000)
+
+    store.revoke(request.nonce)
+    expect(() => store.revoke(request.nonce)).not.toThrow()
+  })
+
+  it('不存在：revoke() 一个从未创建过的 nonce 抛 ApprovalNotFoundError', () => {
+    const store = new ApprovalStore()
+    expect(() => store.revoke('never-existed')).toThrow(ApprovalNotFoundError)
   })
 })
