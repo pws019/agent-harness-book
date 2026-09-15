@@ -250,3 +250,17 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - **Day20 任务2**：`EnvCredentialStore`。`resolve(ref)` 直接用 `ref.id` 原样去读 `process.env`，不做任何前缀/大小写改写——环境变量名本身不敏感，隐式命名规则只会多一条要记的约定。跟 `InMemoryCredentialStore` 保持同一份 `CredentialStore` 接口行为：查不到照样抛 `CredentialNotFoundError`，不返回 `undefined`/空字符串（`credentials.ts`、`credentials.test.ts` +2 条）。同时修正了 `answer.md` 任务3 的哨兵设计结论：一个 `Symbol` 哨兵乍看合理，但扛不住 `JSON.stringify()`（会静默丢弃这个 key），而"显式恢复成上一层默认值"这种标记迟早要写进一份会被序列化的用户配置文件——带命名空间前缀的字符串常量才能扛住这趟往返。
 
 至此 `pnpm test` 共 400 条测试全绿。
+
+## Day22：HTTP Server、API Gateway 与流式协议
+
+阶段四第一天，第一次让 `Agent` 能被网络访问，不再局限于同一个 Node 进程内直接持有。手写路由（不用框架），`Transfer-Encoding: chunked` + 换行分隔 JSON 做流式协议，不做真 WebSocket（握手/帧解析跟本课程主线无关）。
+
+新增：
+- `src/server/wire-protocol.ts`（新文件）—— `StreamEnvelope` 判别联合（`baseline`/`increment`/`terminal`/`transport-error`），跟 `SessionEvent`/`UserInteractionRequest` 同一套 `assertNever` 纪律。`increment` 直接复用 `SessionEvent.seq`（Day8）做游标，没有重新发明一套编号。
+- `src/server/idempotency-store.ts`（新文件）—— `IdempotencyStore.claim(key)`：第一次见到某个 key 才返回 `true`，调用方必须先拿到 `true` 才能真的触发副作用（`Agent.send()`），不是执行完之后才检查有没有重复。
+- `src/server/backlog-writer.ts`（新文件）—— `createBacklogWriter()`：把"这条连接还欠着多少字节没真正 flush"从真实 `node:http` socket 上剥离成一个纯逻辑单元，测试可以用一个永远不调用 `onFlushed` 的假 `write` 确定性地验证超限逻辑，不依赖操作系统 socket 缓冲区大小。超限时用 `res.end()` 而不是 `res.destroy()`——把最后一条 `transport-error` 消息讲完再挂断，不是直接砸断连接让这条诊断信息自己都发不完整。
+- `src/server/session-registry.ts`（新文件）—— `SessionRegistry`：`Map<sessionId, Agent>` 的生命周期所有者，`create()` 给每个 `Agent` 接一个自定义 `SessionSink`（复用 Day9 就有的接口，这次不是写盘，是广播给正在监听 `GET /events` 的连接）。
+- `src/server/http-server.ts`（新文件）—— `createHttpServer()`：`POST /sessions`（建session）、`POST /sessions/:id/messages`（幂等）、`POST /sessions/:id/cancel`（复用 `Agent.cancel()`，已有信号传播机制自动生效）、`GET /sessions/:id`（复用 Day10 `projectSummary()`）、`GET /sessions/:id/events`（流式，先发 baseline、再持续发 increment，`turn/end` 到达时发 terminal 并正常关闭这次响应）。Bearer token 只做"有没有钥匙"的准入检查，明确不是真授权模型（诚实记录的缺口）。
+- `tests/wire-protocol` 相关：`tests/backlog-writer.test.ts`（4条）、`tests/idempotency-store.test.ts`（5条）、`tests/http-server.test.ts`（10条，真实临时端口 + 真实 socket，覆盖端到端流程/幂等去重/取消传播到真实 Agent/鉴权/backlog 超限/correlation id）。手动跑过一遍真实服务器（`curl` 起服务、发消息、看流式响应），不是只有单测覆盖。
+
+至此 `pnpm test` 共 419 条测试全绿，`pnpm typecheck` 无错误。

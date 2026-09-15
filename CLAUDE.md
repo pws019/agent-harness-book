@@ -1,10 +1,10 @@
 # 项目说明（给协作的 Claude 用）
 
-这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day21`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14/Day21 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/`、`day15-21-phase3-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day21。
+这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day22`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14/Day21 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/`、`day15-21-phase3-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day22。
 
 ## 项目当前进度（会过期，动手前先用 `git log`/`ls modules/` 核实）
 
-截至这次更新：Day1-21 全部完成——阶段一（Day1-7）、阶段二（Day8-14）、阶段三（Day15-21，受控执行与人机协作）都已建完。阶段三：Day15（文件系统能力 `edit_file`）、Day16（子进程与 Bash 执行 `run_command`）、Day17（后台任务 `JobRuntime`）、Day18（沙箱与最小权限 `CommandPolicy`+威胁模型）、Day19（审批 `ApprovalStore`、权限预设）、Day20（凭据 `CredentialRef`/`CredentialStore`、分层设置 `mergeSettings`、`WorkspaceContext`）、Day21（里程碑三：`src/propose-edit.ts` 把前几天的机制串成 `cli.ts` 的 `propose-edit` 子命令，25 条安全测试索引，事故演练文档）。`mini-harness/` 388 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。30 天大纲里 Day22-30（阶段 IV/V：平台化编排、生产验证）还没开始，根 `README.md` 里那部分还是原始大纲文本，`~/.claude/plans/stateless-swinging-kurzweil.md` 里的 Day17-21 计划已经全部完成。
+截至这次更新：Day1-22 全部完成——阶段一（Day1-7）、阶段二（Day8-14）、阶段三（Day15-21，受控执行与人机协作）都已建完，阶段四（Day22-27，平台化与编排）进行中。阶段四目前只有 Day22（HTTP Server：`src/server/` 下 `wire-protocol.ts`/`idempotency-store.ts`/`backlog-writer.ts`/`session-registry.ts`/`http-server.ts`，第一次让 `Agent` 能被真实网络访问，手动 `curl` 验证过）。`mini-harness/` 419 条测试全绿，`mini-harness/CHANGELOG.md` 和两份 `README.md` 的进度表/tag 范围/测试数每天同步更新。30 天大纲里 Day23-30（阶段 IV 剩余 + 阶段 V：生产验证）还没开始，根 `README.md` 里那部分还是原始大纲文本，`~/.claude/plans/stateless-swinging-kurzweil.md` 里当前的计划是"Phase III 全貌地图 + Day22-27"，Day22 已完成，Day23-27 待续。
 
 如果要继续往下做新的一天，按已经跑顺的节奏来，不用每天都停下来找我确认：
 1. 先读现存代码（不要凭记忆假设，代码可能已经变了），设计这一天要在 `mini-harness/` 里加什么。
