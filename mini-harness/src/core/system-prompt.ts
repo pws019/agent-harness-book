@@ -1,3 +1,4 @@
+import type { SkillDefinition } from './skill-registry.js'
 import type { ToolSchema } from '../tools/types.js'
 
 /**
@@ -11,6 +12,10 @@ export interface SystemPromptSections {
   readonly taskContext?: string
   /** 政策提示，比如"不要执行写操作""每次调查最多10轮"。省略时不渲染这个分段。 */
   readonly policies?: readonly string[]
+  /** Day24：这一轮按需加载的 skill（`SkillRegistry.match()`/`selectSkillsWithinBudget()`
+   * 挑出来的那一份）。省略或空数组时不渲染这个分段——不相关的 skill 不出现在提示词里,
+   * 不是"加载了但内容是空的"。 */
+  readonly skills?: readonly Pick<SkillDefinition, 'name' | 'body'>[]
 }
 
 /**
@@ -31,7 +36,14 @@ export function buildSystemPrompt(sections: SystemPromptSections): string {
   if (sections.policies && sections.policies.length > 0) {
     parts.push(`# Policies\n${renderPolicyList(sections.policies)}`)
   }
+  if (sections.skills && sections.skills.length > 0) {
+    parts.push(`# Loaded skills\n${renderSkillList(sections.skills)}`)
+  }
   return parts.join('\n\n')
+}
+
+function renderSkillList(skills: readonly Pick<SkillDefinition, 'name' | 'body'>[]): string {
+  return skills.map((skill) => `## ${skill.name}\n${skill.body}`).join('\n\n')
 }
 
 function renderPolicyList(policies: readonly string[]): string {

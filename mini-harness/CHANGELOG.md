@@ -278,3 +278,17 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/conversation.test.ts`（6条）、`tests/client-reconnection.test.ts`（10条，8个不同种子的故障注入收敛测试 + 2条边界测试：连续失败放弃、abort 立刻停止）。
 
 至此 `pnpm test` 共 435 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day24：技能、命令、计划、目标与提醒
+
+五个概念权重完全不一样，不平均分配代码量——Reminder 刻意只写了20行，Skill/Goal 各接了一整条链路。
+
+新增：
+- `src/core/skill-registry.ts`（新文件）—— `SkillRegistry.match()` 按触发关键词做纯字符串匹配（不做语义匹配,诚实的缺口）；`selectSkillsWithinBudget()` 贪心按字符数（不是伪造的 token 数——这个项目至今没有真实的 token 估算函数）选出装得下的 skill。`src/core/system-prompt.ts` 新增可选的 `skills` 字段并接入 `buildSystemPrompt()`（Day11），只在非空时渲染"# Loaded skills"分段。今天没有把 `SkillRegistry.match()` 自动接进 `Agent` 每个 turn 的开头——机制独立交付,接不接进真正调用方是另一个决定。
+- `src/core/command-registry.ts`（新文件）—— `Command`/`CommandRegistry`：给"人直接触发,不经过模型工具调用管线"这个从 Day21 `propose-edit` 子命令起就隐含存在的区分起名字。`createProposeEditCommand()` 把已有的 `proposeEdit()`（Day21）包成一个 `Command`,测试证明包装前后行为完全一致,不是发明新逻辑。
+- `src/core/plan-mode.ts`（新文件）—— `PlanModeController`：不是真的能切断 `Agent` 工具访问的包装层（`AgentDeps.tools` 构造时就固定,没法动态换）,是一个决策器,`decide()` 委托给当前模式对应的 Day19 `PermissionPreset`,`switchTo()` 记录完整的模式切换审计历史。
+- `src/core/goal.ts`（新文件）—— `GoalStore`：状态机 `open → pending-verification → closed`，模型的工具调用只能把状态推到 `pending-verification`,真正的 `close()` 必须调用一个跟模型输出完全独立的 `verify()` 函数,返回 `false` 就拒绝关闭、状态保持不变、允许之后重试。
+- `src/core/reminder.ts`（新文件）—— `scheduleReminder()`：Day6 `Agent.steer()` 套一层 `setTimeout`,~20行,刻意不做成新的子系统。
+- `tests/skill-registry.test.ts`（7条，含跟 `system-prompt.ts` 接线的集成测试）、`tests/command-registry.test.ts`（5条）、`tests/plan-mode.test.ts`（4条）、`tests/goal.test.ts`（9条）、`tests/reminder.test.ts`（3条，`vi.useFakeTimers()` 精确控制定时器）。
+
+至此 `pnpm test` 共 463 条测试全绿，`pnpm typecheck` 无错误。
