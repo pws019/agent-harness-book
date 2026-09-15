@@ -1,11 +1,16 @@
+import { readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
 import { resolve } from 'node:path'
-import { Agent, type TurnRecord } from './core/agent-handle.js'
+import { Agent, type AgentDeps, type TurnRecord } from './core/agent-handle.js'
 import { ApprovalStore, type ApprovalRequest } from './core/approval.js'
+import { DelegationBudget } from './core/delegation-budget.js'
 import { createAutonomousPreset, createBalancedPreset, createReadonlyPreset, type PermissionPreset } from './core/permission-presets.js'
 import { FileRawStore, JsonlSessionStore } from './core/persistence.js'
 import { deriveMessages } from './core/session.js'
 import { deriveTitle, projectSummary } from './core/session-projection.js'
+import { SubagentManager } from './core/subagent.js'
+import { buildWorkflowFromScript, WorkflowRunner } from './core/workflow-runner.js'
+import { collectAgentIds } from './core/workflow-types.js'
 import { HeuristicInvestigationAdapter } from './heuristic-adapter.js'
 import type { LlmAdapter } from './llm/adapter.js'
 import type { Message } from './llm/types.js'
@@ -252,6 +257,62 @@ async function runProposeEditCommand(argv: readonly string[]): Promise<void> {
   if (outcome.kind !== 'applied') process.exitCode = 1
 }
 
+/**
+ * 阶段四里程碑：`pnpm cli -- run-workflow --workspace <dir> --script <path> --query <text>
+ * [--max-agents <n>] [--force-cancel-after-ms <n>]`。把 Day22-26 各自独立建好的每一块
+ * 第一次串成一条真正能跑的命令——`--script` 指向的文件是一段普通 JS 源码，最后一句
+ * 调用 Day27 的 `agent()`/`parallel()`/`pipeline()`/`phase()` 拼出一棵计划树,经
+ * `buildWorkflowFromScript()`（Day25 `CodeRuntime`）跑出树本身,再交给
+ * `WorkflowRunner`（内部用 Day26 `SubagentManager`）真正执行。
+ *
+ * 诚实的简化：这条命令里,树上每一个 `agentId` 最终都对应同一种 `HeuristicInvestigationAdapter`
+ * worker——都指向同一个 `--workspace`、同一个 `--query`,不同 `agentId` 之间不切换模型
+ * 或工具集。区分它们的只是脚本里附加的 `task` 文本标签（主要起标注作用，
+ * `HeuristicInvestigationAdapter` 本身不读它）。这是这门课"零新依赖、不接真实模型"这条线
+ * 延续到 Day27 的必然结果，不是遗漏——脚本要选不同的 worker,只需要把 `agentId` 换成
+ * 不同的字符串,`registry` 那一步自然会各建一份独立的 `Agent`/`Session`。
+ */
+async function runWorkflowCommand(argv: readonly string[]): Promise<void> {
+  const get = (flag: string): string | undefined => {
+    const index = argv.indexOf(flag)
+    return index >= 0 ? argv[index + 1] : undefined
+  }
+  const workspace = resolve(get('--workspace') ?? process.cwd())
+  const scriptPath = get('--script')
+  const query = get('--query')
+  if (!scriptPath || !query) {
+    throw new Error(
+      'usage: run-workflow --workspace <dir> --script <path> --query <text> [--max-agents <n>] [--force-cancel-after-ms <n>]',
+    )
+  }
+  const maxAgentsRaw = get('--max-agents')
+  const maxAgents = maxAgentsRaw ? Number(maxAgentsRaw) : 10
+  const forceCancelAfterMsRaw = get('--force-cancel-after-ms')
+
+  const source = await readFile(resolve(scriptPath), 'utf8')
+  const tree = buildWorkflowFromScript(source)
+
+  const registry = new Map<string, Omit<AgentDeps, 'sink'>>(
+    collectAgentIds(tree).map((agentId) => {
+      const tools = new ToolRegistry()
+      for (const tool of createReadOnlyFsTools(workspace)) tools.define(tool)
+      return [agentId, { adapter: new HeuristicInvestigationAdapter(query), tools, provider: 'demo', model: 'heuristic-investigator-v1' }]
+    }),
+  )
+
+  const budget = new DelegationBudget({ maxConcurrent: registry.size, maxTotalChildren: registry.size, maxDepth: 1 })
+  const manager = new SubagentManager(budget)
+  const runner = new WorkflowRunner(manager, registry)
+
+  const state = await runner.run(tree, {
+    maxAgents,
+    ...(forceCancelAfterMsRaw ? { forceCancelAfterMs: Number(forceCancelAfterMsRaw) } : {}),
+  })
+
+  console.log(JSON.stringify(state, null, 2))
+  if (state.kind !== 'completed') process.exitCode = 1
+}
+
 async function main(): Promise<void> {
   // pnpm cli -- <args> 有的版本会把这个 `--` 原样转发给 tsx（不像我们在 Day7 study.md
   // §0 讲的那样被吃掉），子命令判断必须先把它剥掉，不然 `argv[0]` 是 `'--'` 而不是
@@ -275,6 +336,10 @@ async function main(): Promise<void> {
   }
   if (argv[0] === 'propose-edit') {
     await runProposeEditCommand(argv.slice(1))
+    return
+  }
+  if (argv[0] === 'run-workflow') {
+    await runWorkflowCommand(argv.slice(1))
     return
   }
 

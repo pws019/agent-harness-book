@@ -319,3 +319,17 @@ LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compil
 - `tests/structured-result.test.ts`（5条）、`tests/delegation-budget.test.ts`（7条）、`tests/subagent.test.ts`（9条，真实构造多个 `Agent` 实例的端到端验证）。
 
 至此 `pnpm test` 共 518 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day27：Workflow——可审计编排（阶段四里程碑）
+
+把 Day22-26 各自独立建好的每一块第一次串成一条真正能跑的命令——不引入新的隔离/预算机制，`agent` 叶子直接复用 Day26 `SubagentManager`，`CodeRuntime`（Day25）拿到第一个真正的调用方。
+
+新增：
+- `src/core/workflow-types.ts`（新文件）—— `WorkflowNode` 判别联合（`agent | parallel | pipeline | phase`）+ `assertNeverWorkflowNode`/`countAgentLeaves`/`collectAgentIds`/`isWorkflowNode`。`agent` 叶子只带一个字符串 `agentId` + `task` 文本，刻意不嵌入真实的 `AgentDeps`——这样这棵树才能安全地从 `node:vm` 沙箱里的脚本构建出来，不用把宿主对象当绑定传进去（真要传宿主函数，Day25 `code-runtime.test.ts` 已经验证过那是沙箱逃逸的必要条件）。
+- `src/core/workflow-dsl.ts`（新文件）—— `agent()`/`parallel()`/`pipeline()`/`phase()` 四个纯构建函数，调用即返回描述符、不执行任何东西，跟 `React.createElement()`/JSX 是同一个形状。
+- `src/core/workflow-runner.ts`（新文件）—— `WorkflowRunner`：`run()` 最早一步 `countAgentLeaves()` 对比 `maxAgents`，fail-closed 拒绝超限的树（不启动任何子 Agent）；`interpret()` 递归解释四种节点，`agent` 叶子调 `SubagentManager.startChild()`，`parallel` 用 `Promise.all`，`pipeline` 依次执行（不做"上一步结果喂给下一步"，诚实记录的范围收缩），`phase` 是带名字的审计检查点。终态 `completed | cancelled | error` 三选一，`settle()` 内部一个 `settled` 标志位保证只会真正落定一次。**设计上刻意选择的边界**：`cancel()`/`forceCancelAfterMs` 触发的 `forceCancel()` 不等子 Agent 的 `dispose()` 真正完成——`Agent.dispose()`（Day6）内部是 `await this.runLoopPromise`，如果子 Agent 的 adapter 完全不理会 `AbortSignal`（真的卡死），这个 `await` 永远不会 resolve；`forceCancel()` 选择让 `dispose()` 在后台跑、不等它，`WorkflowRunner` 自己的终态立刻落定成 `cancelled`。亲手验证过：把 `forceCancel()` 改成等 `Promise.all(dispose...)` 完成再 `settle()`，`tests/workflow.test.ts` 里"卡死子任务"那条测试就从 79ms 内通过变成 5 秒超时。另有 `buildWorkflowFromScript()`：把四个 DSL 函数当唯一绑定喂给 `CodeRuntime` 跑一段脚本，脚本最后一句的完成值就是计划树，先过 `isWorkflowNode()` 校验再返回，脚本写错在这里就被拒绝。
+- `src/cli.ts` 新增 `run-workflow` 子命令——`pnpm cli -- run-workflow --workspace <dir> --script <path> --query <text> [--max-agents <n>] [--force-cancel-after-ms <n>]`：读脚本文件、`buildWorkflowFromScript()` 建树、给树里每个 `agentId` 建一份指向同一 `--workspace`/`--query` 的 `HeuristicInvestigationAdapter` worker（诚实的简化：这条命令里不同 `agentId` 不切换模型/工具集，只是同一种 worker 的多份独立实例）、`WorkflowRunner.run()` 真正执行，打印最终 `WorkflowTerminalState` 的 JSON。手动跑过一遍真实的 `pipeline(agent, parallel(agent, agent))` 脚本，确认输出的结果树跟树的结构完全对应；另外验证过一段返回值不是合法 `WorkflowNode` 的脚本会被 `WorkflowScriptError` 清晰拒绝，进程以非零退出码收尾。
+- `tests/workflow.test.ts`（12条）：DSL 本身（2条）、`buildWorkflowFromScript()`（3条，含"够不着 `require`"这条跟 Day25 白名单纪律的集成验证）、`WorkflowRunner` 解释四种节点组合出的真实 `Agent` 端到端结果（3条）、`maxAgents` fail-closed（1条）、卡死子任务下的有界取消 + `forceCancelAfterMs` 自动触发（2条）、终态竞态唯一性（1条）。
+- `modules/day27-milestone-workflow-orchestration/phase-iv-test-index.md`——汇总 Day22-27 共 30 条已验证的边界/故障注入测试索引，仿照 `day21-milestone-secure-agent/security-test-index.md` 的做法，不是重新写一遍。
+
+至此 `pnpm test` 共 530 条测试全绿，`pnpm typecheck` 无错误。阶段四（Day22-27，平台化与编排）全部完成。
