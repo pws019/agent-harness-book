@@ -307,3 +307,15 @@ LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compil
 - `tests/tsserver-client.test.ts`（5条）、`tests/semantic-query.test.ts`（8条）、`tests/web-search-tool.test.ts`（5条）、`tests/web-fetch-tool.test.ts`（9条）、`tests/code-runtime.test.ts`（7条，含沙箱逃逸的正反两条验证）。
 
 至此 `pnpm test` 共 497 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day26：Subagent——隔离、委派与预算
+
+不需要 Day22 的 HTTP 层——委派是纯进程内的问题，父 `Agent` 直接 `new Agent(...)` 构造子 `Agent`，两者之间不隔着任何网络连接。
+
+新增：
+- `src/core/structured-result.ts`（新文件）—— `createStructuredResult()`：跨越父子边界的唯一合法通道，复用 Day8 `isJsonValue()` 强制校验,不是新发明一套校验逻辑。
+- `src/core/delegation-budget.ts`（新文件）—— `DelegationBudget`：`maxConcurrent`/`maxTotalChildren`/`maxDepth` 真正强制执行（`canStart()` fail-closed）；`maxTimeMs` 真的会取消超时的子 Agent（复用 Day6 `agent.cancel()`）；`maxTokens` 诚实记录为"追溯性"——只影响下一个子 Agent 能不能启动，拦不住一个已经在跑的子 Agent 自己超支（那是 Day12 `TokenMeter` 单 Agent 内部预算管的事）。
+- `src/core/subagent.ts`（新文件）—— `SubagentManager.startChild()`：独立 `Session`（不共享父的可变 `Message[]`）、只有 `StructuredResult` 能跨边界、`presetRank()` 显式偏序防权限升级（`readonly < balanced < autonomous`，不认识的 preset 名字 fail-closed）、`disposeAll()` 级联清理不留孤儿子 Agent。**真实验证过一个记账时机的坑**：`DelegationBudget.recordStart()` 如果推迟到子 Agent 跑完才调用（而不是启动前），两次背靠背的同步 `startChild()` 调用会让 `maxConcurrent` 限制完全失效——两次调用的 `canStart()` 检查都发生在任何一次 `recordStart()` 真正执行之前。
+- `tests/structured-result.test.ts`（5条）、`tests/delegation-budget.test.ts`（7条）、`tests/subagent.test.ts`（9条，真实构造多个 `Agent` 实例的端到端验证）。
+
+至此 `pnpm test` 共 518 条测试全绿，`pnpm typecheck` 无错误。
