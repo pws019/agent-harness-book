@@ -31,6 +31,55 @@
 
 ## 2. 一次 HTTP 调用要经过哪些代码
 
+### 2.0 先从客户端视角搞清楚：这五个接口分别是干嘛的，正常怎么用
+
+在看"某一次调用具体经过哪些代码"之前，先搞清楚一件更基础的事：一个真实客户端（不管是 Day23 的终端 client，还是随便一个 `curl`/前端页面）要跟这个服务器打交道，正常会按什么顺序调用这五个接口、每个接口各自在解决什么问题。
+
+| 接口 | 客户端为什么调它 | 返回/行为 |
+|---|---|---|
+| `POST /sessions` | "我要开始一次新的调查/对话" | 服务端 `new` 一个全新的 `Agent`，返回一个 `sessionId`——后面四个接口都要带着这个 id |
+| `GET /sessions/:id/events?since=<seq>` | "我要实时看这个 session 里发生的一切"——这是一个**长连接**，不是"问一次答一次" | 先发一份到目前为止已经发生过的所有事件（`baseline`），然后只要 session 还在跑，新事件一发生就立刻推过来（`increment`），turn 真正跑完了发一条 `terminal` 然后正常关闭连接 |
+| `POST /sessions/:id/messages` | "我要给这个 session 发一句话，让 Agent 开始/继续干活" | 服务端调 `agent.send()`，**返回值本身不含 Agent 的回复**——回复要靠上面 `GET /events` 那条长连接才能实时看到（这一点最容易看反，下面单独讲） |
+| `POST /sessions/:id/cancel` | "算了，别跑了"——用户中途反悔 | 服务端调 `agent.cancel()`，效果会作为一条 `turn/end` 事件出现在 `GET /events` 流里（`reason.kind === 'cancelled'`），不是这个 `cancel` 请求自己的响应体里 |
+| `GET /sessions/:id` | "我现在只想瞄一眼这个 session 大概跑成什么样了"——不想为了看一眼就开一条长连接 | 一次性返回 `projectSummary()`（Day10）算出来的快照，问完这次 HTTP 请求就结束，不会持续推送 |
+
+**`POST /messages` 不返回 Agent 的回复，这不是疏漏，是这五个接口分成"写"和"读"两条线的必然结果**——`POST /messages` 只负责"把这句话交给 Agent、告诉你它确实收到了并且排到了第几个 turn"（响应体是 `{turnNumber}`），Agent 真正想什么、调用了什么工具、最终回复了什么，这些全部通过 `GET /events` 那条持续存在的连接推送出来。这跟前端"发一个 mutation 请求,UI 的更新靠另一条订阅/轮询拿到"是同一个形状,只是这里的"订阅"具体落地成了一条 chunked HTTP 连接。
+
+**一次典型的客户端使用顺序**：
+
+```
+客户端                                      服务端
+  │
+  ├─ POST /sessions ─────────────────────▶  新建 Agent，返回 sessionId
+  │◀───────────────── { sessionId } ─────
+  │
+  ├─ GET /sessions/:id/events (长连接打开，一直挂着不断) ──▶
+  │◀── { kind: 'baseline', snapshot: [] } ──（这个 session 还没发生过任何事，snapshot 是空的）
+  │
+  ├─ POST /sessions/:id/messages { text: '...' } ────────▶  agent.send(...)
+  │◀────────────────── { turnNumber: 0 } ─────────────────  （这一步不含任何回复内容）
+  │
+  │◀── { kind: 'increment', event: {...} } ──（Agent 调了第一个工具）  ┐
+  │◀── { kind: 'increment', event: {...} } ──（工具结果回来了）        │ 都从上面
+  │◀── { kind: 'increment', event: {...} } ──（模型给出最终回复）      │ 那条长连接推过来
+  │◀── { kind: 'terminal', reason: 'completed', lastSeq: N } ────────┘  （turn 跑完了,这条连接自己关闭）
+  │
+  ├─（可选）GET /sessions/:id ────────────▶  一次性看一眼当前状态摘要
+  │◀───────────── projectSummary(...) ─────
+  │
+  ├─（可选，如果还想接着聊）POST /sessions/:id/messages { text: '...' } ──▶ agent.send(...)（开下一个 turn）
+  │   ↑ 这时候上一条 GET /events 连接已经因为收到 terminal 而正常关闭了——
+  │     要继续看新一轮 turn 的事件，客户端需要重新开一条 GET /events?since=<上次的 lastSeq> 连接
+  │
+  └─（任意时刻，只要还没收到 terminal）POST /sessions/:id/cancel ──▶  agent.cancel()
+      效果不会出现在这次 cancel 请求的响应里，而是作为一条 reason:'cancelled' 的 terminal
+      出现在 GET /events 那条连接上——跟上面"POST /messages 不直接返回回复"是同一个道理
+```
+
+这张图里有两个容易看反的地方，专门点破：① `GET /sessions/:id/events` 和 `POST /sessions/:id/messages` 是**两条独立的、互不阻塞的连接**——`POST /messages` 的 HTTP 响应几乎立刻就会回来（只是"收到了"），Agent 真正的思考过程需要多久，`POST /messages` 的调用方完全不需要等，实时进展全靠旁边那条已经打开的 `GET /events` 长连接持续推送；② 一条 `GET /events` 连接只服务**一个 turn 的生命周期**——`terminal` 一发出，这条连接就正常关闭了，不是"整个 session 期间只用开一次"，下一个 turn 想继续实时看,客户端要用上一次拿到的 `lastSeq` 重新开一条新的 `GET /events?since=<lastSeq>` 连接（Day23 的 `Conversation`/`runReconnectingStream()` 就是专门处理这个"连接会关闭、要用 seq 接回去"的场景的）。
+
+### 2.1 具体到代码层面，一次 HTTP 调用经过哪些代码
+
 ```
 客户端 fetch('POST /sessions')
       │
