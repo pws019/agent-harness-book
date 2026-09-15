@@ -143,6 +143,12 @@ complete(key: string, response: Response): void
 
 **为什么两个并发请求不会都拿到 `true`**：Node 是单线程的——`handleRequest()` 里 `claim()` 到 `complete()` 之间没有任何 `await`（[http-server.ts:118-131](../../mini-harness/src/server/http-server.ts#L118-L131)），也就是说一旦某个请求的处理函数执行到 `claim()`，会一路同步跑到 `complete()`/`return`，中途不会被另一个请求的代码打断——两个几乎同时到达的请求，哪个先被 Node 的事件循环挑中执行，哪个就会真的拿到 `claim()` 返回 `true`，另一个无论多"同时"，只要它的这段同步代码还没轮到，就必然会在 `claim()` 那一行看到 `false`。`tests/http-server.test.ts` 里"两个并发请求"那条测试断言的就是这件事。
 
+**一个诚实记录的缺口：`IdempotencyStore` 的记录只会增加，永远不会被清理**。`idempotency`（[http-server.ts:67](../../mini-harness/src/server/http-server.ts#L67)）是 `createHttpServer()` 里只 `new` 一次、被所有 session、所有请求共用的一个实例——`claim()`/`complete()` 只会往内部的 `Map` 里写，`idempotency-store.ts` 里没有任何一处会 `delete()`。服务器不重启的话，这个 `Map` 会随着收到的请求数量单调增长，永远不会缩小。
+
+`idempotency-store.ts:15-17` 那条注释（"这个类不做时间淘汰……幂等 key 的语义就是'同一个 key 永远对应同一次操作'，没有'过期之后可以重新用'这回事"）容易被误读成"这个问题已经想过了"，但它回答的是另一个问题——**要不要允许同一个 key 过期后被复用**（回答：不允许，语义上不对），跟**要不要为了控制内存把很久以前的记录清掉**是两件事：完全可以做到"这个 key 曾经用过的事实永远有效（不会被同一个 key 的新请求复用），但它对应的记录在足够久之后被清理、腾出内存"——注释没有覆盖后一种设计，代码本身也没做,这是一处目前没有被处理的资源管理缺口。
+
+跟 `createBacklogWriter`（第6节）"给一个不可信的外部输入设一个硬上限"是同一类问题，但机制不同——`createBacklogWriter` 挡的是"单条连接在很短时间内写太快"，这里要挡的是"跨越服务器整个生命周期、请求数量没有自然上限"。真要修，通常两个方向：① **按时间淘汰（TTL）**——给每条记录记一个写入时间，定期或惰性地清掉超过某个窗口（比如 24 小时）没被访问过的记录，现实里客户端不可能在几小时后还带着同一个 key 重试；② **按数量上限淘汰（类似 LRU）**——不看时间，直接限制记录条数上限，超过就挤掉最老的。今天没有做,留到 `exercise.md` 当一道设计题。
+
 ## 5. `SessionRegistry`：一层广播转发，不是重新发明持久化
 
 ```ts
