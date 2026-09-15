@@ -292,3 +292,18 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - `tests/skill-registry.test.ts`（7条，含跟 `system-prompt.ts` 接线的集成测试）、`tests/command-registry.test.ts`（5条）、`tests/plan-mode.test.ts`（4条）、`tests/goal.test.ts`（9条）、`tests/reminder.test.ts`（3条，`vi.useFakeTimers()` 精确控制定时器）。
 
 至此 `pnpm test` 共 463 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day25：Web、LSP 与代码运行时能力
+
+LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compiler API 抄近道，真的 spawn `tsserver`（`typescript` 自带，零新依赖）、走它实测确认的协议。
+
+新增：
+- `src/tools/process-runner.ts` 新导出 `killProcessTree()`（从 `spawnManaged()` 内部拆出来的可复用能力）——`tsserver-client.ts` 需要同样的杀法,但那是长期存活、走交互式协议的进程,不是"喂 stdin、等退出"这种批处理形状,`spawnManaged()` 整体抽象对它不适用,只复用真正通用的这一小块。Day16 原有测试一行没改、全部保持通过。
+- `src/core/tsserver-client.ts`（新文件）—— `TsserverClient`：真实 spawn `tsserver`，协议是实测确认的（先用脚本手动发过请求、打印过原始 stdout 才动手写）——请求是一行 JSON + 换行符；响应/事件是 `Content-Length: N\r\n\r\n` + 精确 N 字节 JSON（LSP 同款 header framing，两者互不抄袭）。
+- `src/core/semantic-query.ts`（新文件）—— `SemanticQueryProvider`/`TsserverProvider`/`TextSearchFallbackProvider`（包一层 Day15 `search_text`）/`withFallback()`。**真实踩到的坑**：`locateIdentifier()` 第一版没跳过注释行，查 `session.ts` 的"Session"类名会先定位到 JSDoc 注释里提到这个词的地方,`tsserver` 诚实报告查无此符号——修复：跳过明显的整行注释再定位。`withFallback()` 是这门课第一次明确写出来的合法 fail-open,跟 Day18/20 的 fail-closed 纪律刻意唱反调,study.md 讲清楚了判断标准（这一步失败的代价是不可逆副作用,还是"结果不够精确"）。
+- `src/tools/web-search-tool.ts`（新文件）—— `FixtureSearchIndex`/`createWebSearchTool()`：不接真实网络，跟 Day7 `HeuristicInvestigationAdapter` 同一个理由。
+- `src/tools/web-fetch-tool.ts`（新文件）—— `createWebFetchTool()`：真实打 `fetch()`，测试指向本地 fixture `node:http` 服务器（真实 socket,不 mock）。`policy?` 直接复用 Day18 `CommandPolicy`（主机名当"command"检查）。两个工具的结果都标 `provenance: 'untrusted-external'`。
+- `src/core/code-runtime.ts`（新文件）—— `CodeRuntime`：`node:vm` + 显式冻结绑定白名单。**真实验证过沙箱逃逸**：任何传进去的宿主函数,靠 `.constructor.constructor(...)` 都能造一个运行在宿主 realm 的新函数,真的拿到了宿主进程的真实 pid——测试里专门验证"只传纯数据不传函数"时这条逃逸会失败。**另一个真实踩到的坑**：超时判断第一版用 `error instanceof Error` 做前置检查,实测发现 `vm` 跨 realm 抛出的错误 `instanceof`（宿主 `Error`）是 `false`,改成检查 `error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT'`（不受跨 realm 身份问题影响）。
+- `tests/tsserver-client.test.ts`（5条）、`tests/semantic-query.test.ts`（8条）、`tests/web-search-tool.test.ts`（5条）、`tests/web-fetch-tool.test.ts`（9条）、`tests/code-runtime.test.ts`（7条，含沙箱逃逸的正反两条验证）。
+
+至此 `pnpm test` 共 497 条测试全绿，`pnpm typecheck` 无错误。

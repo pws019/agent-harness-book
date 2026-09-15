@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 
 /**
  * 一次子进程调用的完整规格——显式到不留任何"隐式继承"的空子。
@@ -119,6 +119,23 @@ class BoundedCollector {
  * 这是"深模块加新能力、不改已有窄接口"的一次实际演练：Day16 写的 18 条测试全部
  * 只认 `runProcess()` 这一个函数签名，这次重构一行都不用碰它们。
  */
+/**
+ * 杀掉一整棵进程树，不只是 `child` 这一个进程——从 `spawnManaged()` 里单独拆出来的
+ * 可复用能力（Day25 `tsserver-client.ts` 需要同样的杀法,但那是一个长期存活、走
+ * 交互式协议的进程,不是"喂一段 stdin、等它退出"这种批处理形状,`spawnManaged()`
+ * 整体的"一次性收集输出"抽象对它不适用——只有"杀整棵树"这一小块逻辑是真正通用的,
+ * 硬套一个不合身的大接口反而会让 `tsserver-client.ts` 的代码更难读懂）。前提
+ * 跟 `spawnManaged()` 一致：`child` 必须是用 `detached: true` 启动的,才是一个真正
+ * 的进程组组长,负 pid 才杀得到整个组。 */
+export function killProcessTree(child: ChildProcess, signalName: NodeJS.Signals = 'SIGKILL'): void {
+  if (child.pid === undefined) return
+  try {
+    process.kill(process.platform === 'win32' ? child.pid : -child.pid, signalName)
+  } catch {
+    // 进程已经自己退出了：kill 一个不存在的 pid/进程组会抛 ESRCH，这是正常收尾路径。
+  }
+}
+
 export function spawnManaged(spec: SpawnSpec, signal: AbortSignal): ManagedProcess {
   const child = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
@@ -143,14 +160,7 @@ export function spawnManaged(spec: SpawnSpec, signal: AbortSignal): ManagedProce
   if (spec.stdin !== undefined) child.stdin?.write(spec.stdin)
   child.stdin?.end()
 
-  const killTree = (signalName: NodeJS.Signals): void => {
-    if (child.pid === undefined) return
-    try {
-      process.kill(process.platform === 'win32' ? child.pid : -child.pid, signalName)
-    } catch {
-      // 进程已经自己退出了：kill 一个不存在的 pid/进程组会抛 ESRCH，这是正常收尾路径。
-    }
-  }
+  const killTree = (signalName: NodeJS.Signals): void => killProcessTree(child, signalName)
 
   const timer = setTimeout(() => {
     timedOut = true
