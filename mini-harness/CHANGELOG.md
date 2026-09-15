@@ -242,3 +242,11 @@ Day1 是设计与决策日，产出在 `modules/day01-agent-vs-workflow/`（`pro
 - **Day16 任务2**：`stdout`+`stderr` 合计输出上限。`SpawnSpec` 新增可选的 `maxTotalOutputBytes`；把原来 `BoundedCollector` 内部自己算余量的逻辑拆成一个独立的 `OutputBudget` 类（`spend(byteLength)` 返回实际允许写入的字节数），`BoundedCollector` 改成向外面传进来的 `OutputBudget` 要额度，不再自己持有 `maxBytes`——默认（没给 `maxTotalOutputBytes`）时 stdout/stderr 各自拿一个独立的 `OutputBudget` 实例（跟原来行为完全一致，Day16 原有 18 条测试不改一行、全部保持通过）；给了 `maxTotalOutputBytes` 之后，两者改成共享**同一个** `OutputBudget` 实例，谁先写谁先占额度，加起来封顶在合计上限（`process-runner.ts`、`process-runner.test.ts` +3 条：只有 stdout 写多、只有 stderr 写多、两边交替写）。
 
 至此 `pnpm test` 共 391 条测试全绿。
+
+## 增量补充：Day17/19/20 任务2 落地
+
+- **Day17 任务2**：`job_status` 的 `elapsedMs` 冻结语义。`JobRuntime` 在 `start()` 记录 `startedAt`，一旦任务到达终态（`completed`/`cancelled`/`error`）立刻冻结 `endedAt`；`poll()` 报告的 `elapsedMs` 在运行期间持续增长，终态之后固定不动，不会在任务早就结束之后还在"继续计时"（`job-runtime.ts`、`job-runtime.test.ts` +2 条）。`answer.md` 任务3补了"并发上限该抛什么"的返回值设计半边：跟已有的 `JobNotFoundError` 对称,新增 `JobCapacityExceededError`。
+- **Day19 任务2**：`ApprovalStore.revoke()`。新增 `ApprovalRevokedError`，跟 `ApprovalExpiredError` 的"没在有效期内被消费"区分开——"故意撤销"和"自然过期"是审计场景下两件不同的事实,不该合并成一种错误。`revoke()` 对 nonce 当前四种状态分别反应：不存在抛错（跟 `consume()` 对未知 id 的态度一致，是调用方 bug 信号）；已消费抛 `ApprovalAlreadyConsumedError`（悄悄放过会让调用方误以为一次危险操作被拦下了，但它其实已经真正执行过）；已过期/已撤销都是 no-op（`consume()` 反正会因为这两种状态自己失败，撤销一个已经废了的请求不需要额外报错，重复撤销本身是幂等操作，跟 `Agent.dispose()`/`JobRuntime.dispose()` 是同一个心智模型）（`approval.ts`、`approval.test.ts` +5 条）。
+- **Day20 任务2**：`EnvCredentialStore`。`resolve(ref)` 直接用 `ref.id` 原样去读 `process.env`，不做任何前缀/大小写改写——环境变量名本身不敏感，隐式命名规则只会多一条要记的约定。跟 `InMemoryCredentialStore` 保持同一份 `CredentialStore` 接口行为：查不到照样抛 `CredentialNotFoundError`，不返回 `undefined`/空字符串（`credentials.ts`、`credentials.test.ts` +2 条）。同时修正了 `answer.md` 任务3 的哨兵设计结论：一个 `Symbol` 哨兵乍看合理，但扛不住 `JSON.stringify()`（会静默丢弃这个 key），而"显式恢复成上一层默认值"这种标记迟早要写进一份会被序列化的用户配置文件——带命名空间前缀的字符串常量才能扛住这趟往返。
+
+至此 `pnpm test` 共 400 条测试全绿。
