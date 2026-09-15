@@ -34,3 +34,28 @@ bearer token 只回答"这个请求有没有钥匙",回答不了"这把钥匙的
 
 1. `SessionEntry` 需要多记一个字段,比如 `readonly ownerToken: string`——`SessionRegistry.create()` 在创建 session 的时候,把发起这次创建请求所使用的 token 记下来,绑定到这个 session 上。
 2. 检查"这个 token 能不能操作这个 session"不应该放进 `checkAuth()`——`checkAuth()` 在路由分发**之前**就被调用（`handleRequest()` 的第一行,`http-server.ts:93`）,这时候还没解析出这次请求要操作哪个 `sessionId`（`segments`/`sessionId` 是后面才算出来的）,`checkAuth()` 现在的签名 `(req, res) => boolean` 根本拿不到这个信息。正确的位置是一个新的、独立的检查——在路由分发确定了 `sessionId` 之后、真正调用 `SessionRegistry` 上任何一个操作方法之前,比较"这次请求带的 token"和"`SessionRegistry.get(sessionId)` 对应的 `ownerToken`",不匹配就返回 403。这跟"鉴权"（你是谁）和"授权"（你能不能对这个具体资源做这件事）是两个不同阶段的检查是同一个道理——`checkAuth()` 只回答第一个问题,第二个问题天然依赖"知道这次请求的目标是谁",不可能提前到路由分发之前完成。
+
+**任务4：`IdempotencyStore` 该怎么防止无限增长**
+
+1. **TTL 而不是数量上限,作为主要淘汰维度**。判断标准看提示那句话："现实中客户端最多可能隔多久重试一次同一个请求"和"服务器愿意为这件事付出多大内存代价",哪个更容易估计——这两个维度对"能不能估计准"是不对等的。重试窗口（TTL 该设多久）是一个业务上界,通常有具体依据（客户端库的重试策略,比如"最多重试 30 秒"）,TTL 设得比这个窗口宽松一点（比如 5 分钟）就能给出一个明确保证："同一个 key 在这个窗口内绝不会导致副作用执行两次"。数量上限做不到这一点——它不是一个跟"这一个 key 该活多久"直接相关的量,而是跟"同一时刻有多少个**不相关**的 key 在竞争同一张表"绑在一起。如果用 LRU 按数量淘汰,一个客户端还在自己重试窗口内、完全没过期的合法重试,可能因为同一时间段涌入了一堆不相关的其它请求被挤出容量上限而被清掉——这时候如果这个客户端真的重试了,`claim()` 会把它当成全新的 key,副作用被重新执行一次,`IdempotencyStore` 存在的意义（防止重复执行）反而被自己的清理机制破坏了。所以设计上：TTL 是主要淘汰维度,数量上限最多作为防御性兜底（防止 TTL 配错或者遭遇异常流量),不该反过来用数量替代 TTL 作为主要判断依据。
+
+   类型签名大致长这样（在原有 `IdempotencyEntry` 基础上多记一个时间戳）：
+
+   ```ts
+   export type IdempotencyEntry<Response> =
+     | { readonly status: 'in-flight'; readonly expiresAt: number }
+     | { readonly status: 'completed'; readonly response: Response; readonly expiresAt: number }
+   // expiresAt 在 claim() 的时候算好：Date.now() + ttlMs
+   ```
+
+   核心判断逻辑：
+
+   ```ts
+   private isExpired(entry: IdempotencyEntry<Response>, now: number): boolean {
+     return now > entry.expiresAt
+   }
+   ```
+
+2. **惰性清理，不用独立的 `setInterval`**。两种方式的代价不对称：`setInterval` 是一个只要进程活着就会一直触发的后台任务,哪怕服务器完全没收到任何新请求——具体到 Node 的后果是,一个没调用 `.unref()` 的 `setInterval` 会阻止进程自然退出,而且这个代码库里 `http-server.ts:213` 已经有一个 `server.on('close', ...)` 收尾钩子,如果加一个 `setInterval` 做清理,必须记得在同一个地方配一个 `clearInterval()`,不然每次 `server.close()` 之后测试/进程会因为这个定时器挂着退不出去。惰性清理（每次 `claim()`/`get()` 顺手检查"当前访问的这个 key 是否已过期,过期就先删了再判断"）不需要考虑这个问题,代价只是：如果服务器长时间没有任何请求,过期记录会一直占着内存,直到下一次任何请求进来才会被顺便清掉。幂等 key 的 TTL 本来就是分钟级别,不是小时/天级别,这点内存代价可以接受,不需要为了这个额外维护一个定时器和对应的收尾逻辑。
+
+3. **不是同一类问题,不能直接照抄 `createBacklogWriter` 的机制**。`createBacklogWriter` 的计数器自带归零信号——`write()` 让它 `+= byteLength`,`onFlushed` 回调让它 `-= byteLength`（`backlog-writer.ts:29-32`),一次写入和它对应的"写完了"是配对的,数字会自己回落到 0,不需要额外的、独立的淘汰逻辑,而且它的生命周期跟一条具体连接绑定——连接关闭,这个计数器（连同整个闭包）自然消失,不需要谁去主动清理。`IdempotencyStore` 完全没有这种配对信号——一个 entry 变成 `completed` 状态恰恰是它必须继续留着的理由（这样晚到的重复请求才能读到正确结果）,"这次操作做完了"这个信号在这里不能触发清理,反而是不清理的原因;它的生命周期也跨越整个服务器进程、由无数个不同客户端的 key 共同决定,没有一个像"连接关闭"那样自然的整体重置时机。换句话说：`createBacklogWriter` 的清理是内建在它核心逻辑里、免费拿到的;`IdempotencyStore` 的清理必须是一套完全独立于它核心逻辑之外、专门为了"记录该在什么时候死"而追加的机制——这是比"一个活得短一个活得长"更根本的原因。
