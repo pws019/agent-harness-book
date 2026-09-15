@@ -1,6 +1,6 @@
 # 项目说明（给协作的 Claude 用）
 
-这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day19`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day19。
+这是一个自学项目：跟着《企业级 Agent / Agent Harness：30 天进阶学习计划》，在 `modules/dayXX-*/` 读文档、做练习，`mini-harness/` 是课程自带的官方参考实现（按天打 tag，目前是 `day01`~`day21`、`phase1-complete`，详见 [mini-harness/README.md](mini-harness/README.md)）。每天目录一般是 `README.md`（学习目标+验收自查）/`study.md`（白话讲解）/`exercise.md`（练习）三件套，Day7/Day14/Day21 这类里程碑收尾日没有单独的 `study.md`；`day00-phase1-overview/`、`day08-13-phase2-overview/`、`day15-21-phase3-overview/` 是跨天全貌地图，不是某一天的课；`modules/dayXX-*/answer.md` 是逐条回答该天 README「今天要学会什么」、exercise.md「验收自查」和其中"思考题"的答案，已经补到 Day21。
 
 ## 项目当前进度（会过期，动手前先用 `git log`/`ls modules/` 核实）
 
