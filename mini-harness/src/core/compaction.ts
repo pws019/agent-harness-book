@@ -1,5 +1,5 @@
 import type { ContentBlock, Message } from '../llm/types.js'
-import { collectCompactionRanges, isJsonValue, Session, SessionAppendError, type SessionEvent } from './session.js'
+import { collectCompactionRanges, isJsonValue, Session, SessionAppendError, type SessionEvent, type SessionSink } from './session.js'
 
 export interface CompactionPlan {
   readonly fromSeq: number
@@ -82,11 +82,21 @@ function extractText(message: Message): string {
  * 目前只有这一个调用方，把校验放在这唯一的入口最前面，跟教 `Session` 自己识别"半开
  * 压缩"这种更通用的兜底相比，今天的防护力是等价的，复杂度低得多。
  */
-export function applyCompaction(session: Session, plan: CompactionPlan): void {
+/** `sink` 是可选的（Day30 `Agent.compact()` 才第一次真正传它）——不给就是原来的
+ * 行为，只改 `session` 内存里的日志；给了就跟 `closeDanglingActivity()`（Day9）
+ * 同一个纪律，每一条追加的事件都顺手转发一份给 `sink`，不然通过 `Agent.compact()`
+ * 触发的压缩只会进内存、不会镜像进持久化 store 或广播给正在监听的客户端。 */
+export function applyCompaction(session: Session, plan: CompactionPlan, sink?: SessionSink): void {
   if (!isJsonValue(plan.summary)) {
     throw new SessionAppendError('compaction summary 不是无损 JSON，拒绝开始一次注定完成不了的压缩')
   }
-  session.append('compaction/start', { fromSeq: plan.fromSeq, toSeq: plan.toSeq })
-  session.append('compaction/summary', { message: plan.summary })
-  session.append('compaction/end', {})
+  // 故意不写成 `sink?.append(session.append(...))`——可选链会连同它的参数表达式
+  // 一起短路：`sink` 是 `undefined` 时,`session.append(...)` 根本不会被求值,
+  // 这次压缩会悄悄变成完全没发生过。拆成两条语句,`session.append()` 永远真的执行。
+  const start = session.append('compaction/start', { fromSeq: plan.fromSeq, toSeq: plan.toSeq })
+  sink?.append(start)
+  const summary = session.append('compaction/summary', { message: plan.summary })
+  sink?.append(summary)
+  const end = session.append('compaction/end', {})
+  sink?.append(end)
 }

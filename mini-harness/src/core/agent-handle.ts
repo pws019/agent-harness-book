@@ -1,4 +1,5 @@
 import { runTurn, type AgentLoopEvent, type AgentLoopOptions, type StopReason } from './agent-loop.js'
+import { applyCompaction, planCompaction, type CompactionPlan } from './compaction.js'
 import {
   closeDanglingActivity,
   deriveMessages,
@@ -133,6 +134,20 @@ export class Agent {
   /** 底层事件日志，只读。给持久化（Day9 下半场）、投影/查询（Day10）用。 */
   get sessionEvents(): readonly SessionEvent[] {
     return this.session.events
+  }
+
+  /**
+   * Day13 `planCompaction()`/`applyCompaction()` 从写出来那天起就是两个纯函数,
+   * 从来没有一个真正的调用方从 `Agent` 内部触发过它们——这个方法就是那个缺的
+   * 调用方（Day30 才第一次真正连起来）。返回值告诉调用方"这次真的压缩了什么"，
+   * 不是一个布尔开关：没有足够多的历史可压缩时返回 `undefined`,不算错误。
+   */
+  compact(options: { readonly keepRecentSurfaceEvents: number }): CompactionPlan | undefined {
+    this.assertNotDisposed()
+    const plan = planCompaction(this.session.events, options)
+    if (!plan) return undefined
+    applyCompaction(this.session, plan, this.deps.sink)
+    return plan
   }
 
   /** 排队一个新 turn。空闲时会立刻唤醒 driver；运行中时新消息留在 inbox，等当前 turn 结束再处理。 */

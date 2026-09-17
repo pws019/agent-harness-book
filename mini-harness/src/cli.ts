@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { Agent, type AgentDeps, type TurnRecord } from './core/agent-handle.js'
 import { ApprovalStore, type ApprovalRequest } from './core/approval.js'
 import { DelegationBudget } from './core/delegation-budget.js'
@@ -11,6 +11,7 @@ import { deriveTitle, projectSummary } from './core/session-projection.js'
 import { SubagentManager } from './core/subagent.js'
 import { buildWorkflowFromScript, WorkflowRunner } from './core/workflow-runner.js'
 import { collectAgentIds } from './core/workflow-types.js'
+import { runGraduationDemo } from './graduation-demo.js'
 import { HeuristicInvestigationAdapter } from './heuristic-adapter.js'
 import type { LlmAdapter } from './llm/adapter.js'
 import type { Message } from './llm/types.js'
@@ -313,6 +314,32 @@ async function runWorkflowCommand(argv: readonly string[]): Promise<void> {
   if (state.kind !== 'completed') process.exitCode = 1
 }
 
+/**
+ * 阶段五里程碑（全课程毕业演示）：`pnpm cli -- graduation-demo --workspace <dir> --query <text>`。
+ * 把 Day1-29 各自独立建好的每一块，第一次真的串成大纲原文那条完整叙事跑一遍——
+ * 细节见 `src/graduation-demo.ts` 和 `modules/day30-milestone-graduation/README.md`。
+ */
+async function runGraduationDemoCommand(argv: readonly string[]): Promise<void> {
+  const get = (flag: string): string | undefined => {
+    const index = argv.indexOf(flag)
+    return index >= 0 ? argv[index + 1] : undefined
+  }
+  const workspace = resolve(get('--workspace') ?? join(process.cwd(), '.graduation-demo'))
+  const query = get('--query') ?? 'GRADUATION_NEEDLE'
+
+  const report = await runGraduationDemo({ workspace, query })
+  console.log(JSON.stringify(report, null, 2))
+
+  const allStagesOk =
+    report.compactionApplied &&
+    report.editOutcome.kind === 'applied' &&
+    report.backgroundJob.exitCode === 0 &&
+    report.reconnectConverged &&
+    report.restartRecovered &&
+    report.goalClosed
+  if (!allStagesOk) process.exitCode = 1
+}
+
 async function main(): Promise<void> {
   // pnpm cli -- <args> 有的版本会把这个 `--` 原样转发给 tsx（不像我们在 Day7 study.md
   // §0 讲的那样被吃掉），子命令判断必须先把它剥掉，不然 `argv[0]` 是 `'--'` 而不是
@@ -340,6 +367,10 @@ async function main(): Promise<void> {
   }
   if (argv[0] === 'run-workflow') {
     await runWorkflowCommand(argv.slice(1))
+    return
+  }
+  if (argv[0] === 'graduation-demo') {
+    await runGraduationDemoCommand(argv.slice(1))
     return
   }
 

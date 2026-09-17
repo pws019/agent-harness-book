@@ -359,3 +359,19 @@ LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compil
 - `modules/day29-load-chaos-security-gate/release-checklist.md`（新文档）—— 根 `README.md` 18条核心不变式逐条对照 mini-harness 当前真实状态打勾，11条完全通过、7条部分通过（各自边界都写清楚了理由），0条完全未做。
 
 至此 `pnpm test` 共 556 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day30：毕业设计与架构答辩（阶段五 & 全课程里程碑）
+
+把 Day1-29 建好的每一块，第一次真的串成大纲原文那条完整叙事跑一遍——建 session → 调查多个来源 → 长上下文触发 compaction → 提出文件修改 → 精确审批 → 沙箱内执行 → 启动后台验证 → 断线重连 → 模拟服务重启并恢复 → 验证目标 → 输出证据、审计和成本。跟 Day7/14/21/27 同一种性质的收尾，不引入新概念。
+
+新增/修复：
+- `src/core/agent-handle.ts` 新增 `Agent.compact(options)` —— Day13 `planCompaction()`/`applyCompaction()` 从写出来那天起就是两个纯函数，没有任何真实调用方（`Agent.session` 是私有字段，外部代码拿不到能喂给 `applyCompaction()` 的 `Session` 实例）。这个方法第一次把它们接进一个真实 `Agent`。
+- `src/core/compaction.ts`（修改）—— `applyCompaction()` 新增可选 `sink` 参数，跟 `closeDanglingActivity()`（Day9）同一个模式，不然通过 `Agent.compact()` 触发的压缩只会进内存、不会镜像进持久化 store。**真实踩到并修复的坑**：第一版把三次 `sink?.append(session.append(...))` 写成链式调用——可选链会连同它的参数表达式一起短路，`sink` 是 `undefined` 时 `session.append(...)` 根本不会被求值，压缩变成完全没发生过（`node -e "undefined?.foo(console.log('x')||1)"` 能验证这个短路行为本身）。修复：拆成"先求值 `session.append()`、再单独一行有条件通知 sink"两条语句。
+- `src/graduation-demo.ts`（新文件）—— `runGraduationDemo()`：把 Day1-29 各自独立建好的每一块（`Agent`/`Session`/`JsonlSessionStore`/`proposeEdit`/`AuditingApprovalStore`/`JobRuntime`/`createHttpServer`/`Conversation`/`GoalStore`/`deriveTelemetry`）串成一条完整叙事。断线重连阶段真实模拟早期断线（读到空 baseline 就 `reader.cancel()`，不是等 turn 完全结束再假装断线）；模拟重启阶段丢弃内存中的 `Agent` 引用、从磁盘重建；goal 验证读了真实文件内容，不是模型自称完成。
+- `cli.ts` 新增 `graduation-demo` 子命令——`pnpm cli -- graduation-demo --workspace <dir> --query <text>`，已手动从真实 shell 跑通。
+- `tests/agent-compact-integration.test.ts`（新文件，4条）—— `Agent.compact()` 这条新接缝本身的集成测试（含"sink 抛错吞掉参数求值"那个坑的回归验证）。
+- `tests/graduation-demo.test.ts`（新文件，3条）—— 完整叙事端到端，包括磁盘上目标文件真的被改写、持久化文件真的能被重新读回。
+- `tests/tsserver-client.test.ts`（修复一处环境相关的测试脆弱性）—— `graduation-demo.ts` 加入项目后，`references()` 查询 `Agent` 类（现在被几乎每个测试文件 import）开始稳定超时，`ps` 实测确认 tsserver 进程当时 CPU 占用接近 0（不是算得慢，是卡住了），120 秒超时依然拿不到响应；换成引用数小得多、但依然"不止一处"的真实符号（`GoalStore`），同样查询 10 毫秒级返回。测试改查 `GoalStore`，不改变原本要验证的东西。
+- `modules/day30-milestone-graduation/`（新文档）—— `README.md`/`exercise.md`/`answer.md`（里程碑日跳过 `study.md`）+ 完整设计包：`architecture.md`（分层视图 + 三条类型复合主线）、`invariants.md`（18条不变式逐条落地证据）、`threat-model.md`（索引已有的三份威胁建模文档）、`failure-model.md`（系统梳理五层故障模式，含"哪种 sink 该吞错误、哪种不该"的判断标准）、`eval-plan.md`、`runbook.md`、`adr/`（6条 ADR：事件溯源作为唯一真源、fail-closed 与 fail-open 判定标准、委派预算与权限偏序、静态可审计 workflow、幂等 claim-before-execute、诚实降级优于隐藏失败）。
+
+至此 `pnpm test` 共 563 条测试全绿，`pnpm typecheck` 无错误。**30 天大纲正式收尾**——阶段一~五（Day1-30）全部完成。

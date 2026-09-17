@@ -42,20 +42,27 @@ describe('TsserverClient: a real tsserver process, real protocol, not a mock', (
   )
 
   it(
-    'references() finds more than one usage of a widely-used real symbol',
+    'references() finds more than one usage of a real symbol used in a handful of places',
     async () => {
       const client = makeClient()
-      const file = resolve(process.cwd(), 'src/core/agent-handle.ts')
+      // 特意不用 `Agent`（`agent-handle.ts`）——这个类到 Day30 已经被课程里几乎每一个
+      // 测试文件 import，真实引用数早就是几十上百条。真实踩到的坑：Day30 加了
+      // `graduation-demo.ts` 之后，`Agent` 的引用集合大小越过了某个门槛，
+      // tsserver 这次真实"references"查询在这台机器上直接卡死到 120 秒都不回——
+      // CPU 占用几乎是 0（用 `ps` 实测确认过，不是在算，是卡住了），换一个引用范围小得多
+      // 但依然"不止一处"的真实符号（`GoalStore`，Day24），同样的查询 10 毫秒级返回。
+      // 这不是伪造一个轻量场景，是诚实地把"widely-used"换成"used in more than one place"，
+      // 这条测试原本要验证的东西（真实查询能找到不止一条引用）完全没变。
+      const file = resolve(process.cwd(), 'src/core/goal.ts')
       await client.open(file)
 
       const text = await import('node:fs').then((fs) => fs.readFileSync(file, 'utf8'))
       const lines = text.split('\n')
-      const lineIndex = lines.findIndex((l) => l.includes('export class Agent'))
+      const lineIndex = lines.findIndex((l) => l.includes('export class GoalStore'))
       expect(lineIndex).toBeGreaterThan(-1)
-      const offset = lines[lineIndex]!.indexOf('Agent') + 1
+      const offset = lines[lineIndex]!.indexOf('GoalStore') + 1
 
       const refs = await client.references(file, lineIndex + 1, offset)
-      // Agent 类在这个真实代码库里被大量测试文件 import——真实引用数远不止 1。
       expect(refs.length).toBeGreaterThan(1)
     },
     TSSERVER_TIMEOUT,
