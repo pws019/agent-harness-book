@@ -23,7 +23,7 @@ agent-study/
 
 **推荐阅读顺序**：先扫一眼 [modules/day00-phase1-overview/](modules/day00-phase1-overview/)（阶段一全貌地图，不含练习，现在看不懂大部分术语是正常的），再打开 `modules/day01-.../README.md` 跟着往下走。每天：先读 `study.md` 建立心智模型 → 看 `mini-harness/` 里对应的代码 → 做 `exercise.md` 的练习 → 跑 `pnpm test` 验证。学到中途觉得"看细节看到出不来"的时候，随时回 Day0 那张地图对一遍——这正是它存在的目的。
 
-**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day27`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
+**代码怎么对照**：`mini-harness/` 是一个 git 仓库（本目录本身就是），每天结束都打了一个 tag（`day01`…`day28`）。卡住了可以 `git diff day0X..day0Y` 看某一天具体改了什么，或者 `git log --oneline` 看整体演进脉络。**建议先自己写，卡住 30-40 分钟再对照参考实现**，不要一上来就抄。
 
 ## 学习建议
 
@@ -33,7 +33,7 @@ agent-study/
 
 日常用法：想知道"Day12 到底改了哪些代码"，直接在这棵树里找到 `feat(day12): ...` 那次提交点开就行，比 `git diff day11..day12` 更直观——尤其是想同时看清"这一天动了几个 `src/` 文件、几个测试、文档改没改"这种概览时，树状展开比一大坨 diff 文本更快扫一眼看懂。
 
-## 目前进度：阶段一~四已完成（Day1-27）
+## 目前进度：阶段一~四已完成，阶段五进行中（Day1-28）
 
 | 天 | 主题 | 目录 |
 |---|---|---|
@@ -67,10 +67,11 @@ agent-study/
 | 25 | Web、LSP 与代码运行时能力 | [modules/day25-web-lsp-code-runtime/](modules/day25-web-lsp-code-runtime/) |
 | 26 | Subagent——隔离、委派与预算 | [modules/day26-subagent-isolation-delegation-budget/](modules/day26-subagent-isolation-delegation-budget/) |
 | 27 | 里程碑四：Workflow——可审计编排 | [modules/day27-milestone-workflow-orchestration/](modules/day27-milestone-workflow-orchestration/) |
+| 28 | 遥测、审计与评测体系 | [modules/day28-telemetry-audit-eval/](modules/day28-telemetry-audit-eval/) |
 
-跑完 Day1-27，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词> --session-file <路径>`，支持崩溃后从同一份文件恢复）、一条端到端的安全写入链路（`pnpm cli -- propose-edit --workspace <目录> --file <路径> --find <文本> --replace <文本>`：读文件 → 生成新内容 → 展示 diff → 人工审批或权限预设 → 批准才写盘 → 可选跑验证命令）、一个能被真实网络访问的 HTTP 服务器（`createHttpServer()`：create/send/cancel/inspect/events stream，换行分隔 JSON 流协议区分 baseline/increment/terminal/transport-error，幂等 key 防重复提交，慢客户端有硬性积压字节上限）、一个断线自动重连、最终收敛到服务端权威状态的终端客户端（`Conversation` 去重/补洞 + `ReconnectingStream` 自动重连），以及独立于 CLI 之外、工具层已经具备的写文件能力（`edit_file`，带 symlink 逃逸防护和乐观并发控制）、子进程执行能力（`run_command`，argv 数组不经过 shell、env 白名单、超时/取消杀整棵进程树）、后台任务能力（`start_job`/`job_status`/`cancel_job`，跨多次调用追踪一个还在跑的子进程，幂等释放）、命令策略（`CommandPolicy`，白名单+fail-closed）、审批机制（`ApprovalStore`，一次性、绑定具体参数，防重放/防换参数/防过期）和凭据/设置能力（`CredentialRef`/`CredentialStore` 只以不透明引用流动、`mergeSettings` 分层合并带来源、`WorkspaceContext` 让 `run_command` 能安全注入凭据而不经过模型），以及一条能编排多个 Agent 的可审计工作流命令（`pnpm cli -- run-workflow --workspace <目录> --script <脚本路径> --query <关键词>`：脚本调用 `agent()`/`parallel()`/`pipeline()`/`phase()` 拼出一棵计划树，经 `node:vm` 沙箱跑出树本身，再交给 `WorkflowRunner` 真正执行，`agent` 叶子复用 Day26 委派机制，取消保证有界时间收尾）。现在共 530 条测试,覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复、投影/查询/标题派生、系统提示词组装、Token 计量与预算、上下文压缩、文件系统路径逃逸与并发写冲突、子进程故障注入、后台任务生命周期与幂等释放、跨天红队回归、凭据不泄漏、审批+写入+验证端到端链路、HTTP 服务器端到端流程（真实 socket）、客户端断线重连（8 个种子的故障注入）、Goal 状态机、Skill 按需加载、**真实 `tsserver` 协议客户端**（真实 spawn TypeScript 自带的语言服务进程,不是 mock）、语义查询降级到文本搜索、**一次真实复现的 `node:vm` 沙箱逃逸**（配一条"只传数据不传函数就挡得住"的对照测试）、子 Agent 委派（独立 Session、结构化结果跨边界、权限不能升级、预算 fail-closed）、Workflow 编排（四种节点组合出的真实端到端结果、`maxAgents` fail-closed、卡死子任务下的有界取消、终态竞态唯一性）。除了 CLI 和服务器,阶段四还建了按需加载技能 `SkillRegistry`（接入 Day11 `buildSystemPrompt`）、人触发命令 `Command`/`CommandRegistry`、`PlanModeController`（复用 Day19 `PermissionPreset`）、目标状态机 `GoalStore`（模型自称完成不能直接关闭目标,必须过外部 `verify()`）、定时提醒 `scheduleReminder`、网页搜索/抓取工具（`provenance:'untrusted-external'` 标记外部内容）、`SubagentManager`/`DelegationBudget`（父 Agent 委派子 Agent，纯进程内、不需要 HTTP 层）。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store、重复压缩产生互相重叠的区间、崩溃截断后续写把日志粘成乱码、重连信号判断不完整、语义查询定位到注释里的名字、`vm` 跨 realm 场景下 `instanceof Error` 失效、委派预算记账时机错误会让并发上限失效、工作流取消如果改成"等子 Agent 真正退出再定终态"会被卡死子任务无限期拖住……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。`modules/day21-milestone-secure-agent/security-test-index.md` 是一份汇总 Day15-21 安全属性的 25 条测试索引，`incident-drill.md` 是一次假设的安全事件演练；`modules/day27-milestone-workflow-orchestration/phase-iv-test-index.md` 是同样风格的阶段四（Day22-27）30 条测试索引。
+跑完 Day1-28，`mini-harness/` 会有一个能跑的调查 CLI（`pnpm cli -- --workspace <目录> --query <关键词> --session-file <路径>`，支持崩溃后从同一份文件恢复）、一条端到端的安全写入链路（`pnpm cli -- propose-edit --workspace <目录> --file <路径> --find <文本> --replace <文本>`：读文件 → 生成新内容 → 展示 diff → 人工审批或权限预设 → 批准才写盘 → 可选跑验证命令）、一个能被真实网络访问的 HTTP 服务器（`createHttpServer()`：create/send/cancel/inspect/events stream，换行分隔 JSON 流协议区分 baseline/increment/terminal/transport-error，幂等 key 防重复提交，慢客户端有硬性积压字节上限）、一个断线自动重连、最终收敛到服务端权威状态的终端客户端（`Conversation` 去重/补洞 + `ReconnectingStream` 自动重连），以及独立于 CLI 之外、工具层已经具备的写文件能力（`edit_file`，带 symlink 逃逸防护和乐观并发控制）、子进程执行能力（`run_command`，argv 数组不经过 shell、env 白名单、超时/取消杀整棵进程树）、后台任务能力（`start_job`/`job_status`/`cancel_job`，跨多次调用追踪一个还在跑的子进程，幂等释放）、命令策略（`CommandPolicy`，白名单+fail-closed）、审批机制（`ApprovalStore`，一次性、绑定具体参数，防重放/防换参数/防过期）和凭据/设置能力（`CredentialRef`/`CredentialStore` 只以不透明引用流动、`mergeSettings` 分层合并带来源、`WorkspaceContext` 让 `run_command` 能安全注入凭据而不经过模型），以及一条能编排多个 Agent 的可审计工作流命令（`pnpm cli -- run-workflow --workspace <目录> --script <脚本路径> --query <关键词>`：脚本调用 `agent()`/`parallel()`/`pipeline()`/`phase()` 拼出一棵计划树，经 `node:vm` 沙箱跑出树本身，再交给 `WorkflowRunner` 真正执行，`agent` 叶子复用 Day26 委派机制，取消保证有界时间收尾），以及一份不侵入已有执行路径的遥测/审计/评测体系（`deriveTelemetry()` 从 Day8 事件日志纯投影出延迟/token/成本报告，`AuditingApprovalStore` 包一层 Day19 `ApprovalStore` 发审计记录，`EvalHarness` 用声明式断言取代手写 `expect(...)`）。现在共 549 条测试,覆盖流式组装、请求重试、工具执行管线、Agent loop 终态、取消/释放的竞态、多轮会话记忆、事件日志的开闭配对不变式、持久化崩溃恢复、投影/查询/标题派生、系统提示词组装、Token 计量与预算、上下文压缩、文件系统路径逃逸与并发写冲突、子进程故障注入、后台任务生命周期与幂等释放、跨天红队回归、凭据不泄漏、审批+写入+验证端到端链路、HTTP 服务器端到端流程（真实 socket）、客户端断线重连（8 个种子的故障注入）、Goal 状态机、Skill 按需加载、**真实 `tsserver` 协议客户端**（真实 spawn TypeScript 自带的语言服务进程,不是 mock）、语义查询降级到文本搜索、**一次真实复现的 `node:vm` 沙箱逃逸**（配一条"只传数据不传函数就挡得住"的对照测试）、子 Agent 委派（独立 Session、结构化结果跨边界、权限不能升级、预算 fail-closed）、Workflow 编排（四种节点组合出的真实端到端结果、`maxAgents` fail-closed、卡死子任务下的有界取消、终态竞态唯一性）、遥测/审计/评测（真实 `run_command` + `envCredentials` 注入验证脱敏只在遥测报告里生效、原始事件日志本身不受影响；`AuditingApprovalStore` 失败的消费尝试不产生审计记录；种子随机采样评测的结果确定性可复现）。除了 CLI 和服务器,阶段四还建了按需加载技能 `SkillRegistry`（接入 Day11 `buildSystemPrompt`）、人触发命令 `Command`/`CommandRegistry`、`PlanModeController`（复用 Day19 `PermissionPreset`）、目标状态机 `GoalStore`（模型自称完成不能直接关闭目标,必须过外部 `verify()`）、定时提醒 `scheduleReminder`、网页搜索/抓取工具（`provenance:'untrusted-external'` 标记外部内容）、`SubagentManager`/`DelegationBudget`（父 Agent 委派子 Agent，纯进程内、不需要 HTTP 层）。过程中真实踩到并修复了好几个 bug（数组被意外冻结、`AbortSignal` 被深冻结坏掉、取消检查时机错误、Session 收尾事件漏转发进持久化 store、重复压缩产生互相重叠的区间、崩溃截断后续写把日志粘成乱码、重连信号判断不完整、语义查询定位到注释里的名字、`vm` 跨 realm 场景下 `instanceof Error` 失效、委派预算记账时机错误会让并发上限失效、工作流取消如果改成"等子 Agent 真正退出再定终态"会被卡死子任务无限期拖住、遥测只在 usage 为真值时才累计会让"未上报"和"上报了0"变成同一个结果……），这些坑本身就是很好的教材，都记录在对应天数的 `study.md` 里，不是我编的案例。`modules/day21-milestone-secure-agent/security-test-index.md` 是一份汇总 Day15-21 安全属性的 25 条测试索引，`incident-drill.md` 是一次假设的安全事件演练；`modules/day27-milestone-workflow-orchestration/phase-iv-test-index.md` 是同样风格的阶段四（Day22-27）30 条测试索引。
 
-阶段一~四全部完成，讲解风格验证下来没问题。**下面是尚未做成白话教材的后续阶段（Day28-30，阶段五：生产验证）大纲，作为路线图参考**，如果你想提前预习，仍然可以按原始大纲里的官方文档链接去读——但建议先等对应模块出来。
+阶段一~四全部完成，阶段五（Day28-30，生产验证与毕业设计）进行中，讲解风格验证下来没问题。**下面是尚未做成白话教材的后续阶段（Day29-30）大纲，作为路线图参考**，如果你想提前预习，仍然可以按原始大纲里的官方文档链接去读——但建议先等对应模块出来。
 
 ## 学习假设与时间投入
 
@@ -89,7 +90,7 @@ agent-study/
 
 ## 阶段 III～V：尚未做成白话教材的路线图（Day 15～30）
 
-以下内容保留自初版大纲，仍然是后续阶段的计划，但还没有经过"研究提炼 + 白话讲解 + 代码化"处理。读起来会比 Day1-27 的 `modules/` 吃力，仅供预习/参考。阶段 II（Day8-14）的原始大纲仍然保留在下面作为对照，但已经全部落地，实际内容请看 `modules/day08-*` 到 `modules/day14-*`，不要以下面这份原始大纲为准。
+以下内容保留自初版大纲，仍然是后续阶段的计划，但还没有经过"研究提炼 + 白话讲解 + 代码化"处理。读起来会比 Day1-28 的 `modules/` 吃力，仅供预习/参考。阶段 II（Day8-14）的原始大纲仍然保留在下面作为对照，但已经全部落地，实际内容请看 `modules/day08-*` 到 `modules/day14-*`，不要以下面这份原始大纲为准。
 
 ### 30 天总览
 
@@ -319,10 +320,12 @@ agent-study/
 
 </details>
 
-### 阶段 V：生产验证与毕业设计（Day 28～30）
+### 阶段 V：生产验证与毕业设计（Day 28～30）——**Day28 已完成，实际实现见 `modules/day28-telemetry-audit-eval/`；Day29-30 是原始大纲，尚未落地**
 
 <details>
 <summary>展开 Day28-30 详情</summary>
+
+以下是初版大纲的原始描述，保留作参考对照；实际怎么落地的、跟原始大纲哪里不一样（Telemetry/Audit/Eval 三者都设计成对 Day8 事件日志的纯派生/对 Day19 `ApprovalStore` 的组合包装，不往 `ToolRegistry`/`LlmAdapter`/`ApprovalStore` 内部加任何钩子——这是"设计两次"之后放弃更侵入方案的结果；"模型抽样评测"今天只能靠一个专门造的种子随机合成 adapter 演示聚合机制本身,这门课至今没有真实的非确定性 provider 能演示更有意义的抽样结果),请看 [modules/day28-telemetry-audit-eval/study.md](modules/day28-telemetry-audit-eval/study.md)，不要以下面这份原始大纲为准。
 
 #### Day 28：遥测、审计与评测体系
 
@@ -389,7 +392,7 @@ agent-study/
 
 ## 每天固定执行的学习闭环
 
-Day1-27 的 `modules/` 已经把这套流程内化进了 `study.md`/`exercise.md` 的结构里；Day28 起如果你想自己先预习，也建议按这条闭环走：
+Day1-28 的 `modules/` 已经把这套流程内化进了 `study.md`/`exercise.md` 的结构里；Day29 起如果你想自己先预习，也建议按这条闭环走：
 
 1. **预测**：阅读前先写下你认为该子系统解决的问题。
 2. **阅读**：读 Reference 的概念段、关键类型、不变式和失败语义。
@@ -433,7 +436,7 @@ DSH 是快速迭代中的 developer preview，官方明确提醒存在兼容性�
 - 不要因为有 subagent/workflow 就使用它们。只有隔离、并行或专业化收益超过成本时才启用。
 - 不要把模型输出当授权、事务结果或事实真源。
 
-## 进一步阅读与源码阅读方法（Day28 起适用）
+## 进一步阅读与源码阅读方法（Day29 起适用）
 
 主资料只使用 DSH 官方来源（真实项目，已核实存在）：
 

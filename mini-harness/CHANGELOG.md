@@ -333,3 +333,16 @@ LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compil
 - `modules/day27-milestone-workflow-orchestration/phase-iv-test-index.md`——汇总 Day22-27 共 30 条已验证的边界/故障注入测试索引，仿照 `day21-milestone-secure-agent/security-test-index.md` 的做法，不是重新写一遍。
 
 至此 `pnpm test` 共 530 条测试全绿，`pnpm typecheck` 无错误。阶段四（Day22-27，平台化与编排）全部完成。
+
+## Day28：遥测、审计与评测体系
+
+阶段五（生产验证与毕业设计）第一天。Telemetry/Audit/Eval 三者都设计成对已有数据的派生/包装，不往 `ToolRegistry`/`LlmAdapter`/`ApprovalStore` 内部加钩子——"设计两次"后放弃了更侵入的方案。
+
+新增：
+- `src/core/redact.ts`（新文件）—— `createRedactor(secretValues)`：给一组已知敏感值，返回一个把它们在任意文本里精确替换成 `[REDACTED]` 的函数。过滤空字符串（否则会把文本每个字符之间插一份占位符）。
+- `src/core/telemetry.ts`（新文件）—— `deriveTelemetry(events, options)`：从 `SessionEvent[]`（Day8 真源）派生遥测报告的纯函数，不加任何执行路径钩子，跟 Day10 `projectSummary()`/`deriveMessages()` 同一个"从真源派生视图"模式。延迟靠配对事件的 `time` 字段相减算（`step/start`↔`assistant/message`，`tool/call`↔`tool/result`）；token 总量复用 Day12 `TokenMeter`；`estimatedCostUsd` 按一份**明确标注"示例定价、非真实"**的可插拔 `CostRateTable` 算出，未配置或 token 数是 `unknown` 时结果也是 `unknown`，不冒充。**真实踩到并修复的坑**：第一版只在 `event.usage` 为真值时才调用 `meter.record()`，导致"没上报用量"和"上报了 0"变成同一个结果（`meter` 初始状态本来就是 0）——修复为无条件调用 `record(event.usage)`，让 `undefined` 也真的喂给 `TokenMeter`，由它自己翻译成 `'unknown'`。
+- `src/core/audit-log.ts`（新文件）—— `AuditingApprovalStore`：包一层真实的 Day19 `ApprovalStore`（组合，不修改 `approval.ts`），转发 `create`/`consume`/`revoke` 的同时往可选的 `AuditSink` 发一条 `AuditRecord`，新增一个 `principal: string` 参数（诚实记录：调用方自称的身份，不是经过验证的用户身份，跟 Day22 bearer token 同一类缺口）。只有 `inner` 调用真正成功（未抛错）才发出审计记录。`ApprovalStore` 不暴露按 nonce 查询的方法，`AuditingApprovalStore` 自己维护一份只存静态元数据（action/target）的小映射，不重复真正的状态机判断。
+- `src/core/eval-harness.ts`（新文件）—— `Scenario`/`ScenarioAssertion`（`final-text-includes`/`tool-called`/`stop-reason` 三选一）/`runScenario()`（直接复用 `cli.ts` 的 `runInvestigation()`）/`runScenarioSet()`（聚合报告）/`sampleScenario()`（跑 n 次聚合通过率）。`createFlakySampleAdapter()`：专门为了证明"抽样聚合"这条计算路径本身正确而造的、带 `mulberry32` 种子随机性的合成 adapter（复用 Day23 `fault-injecting-transport.ts` 同一个确定性伪随机手法）——诚实记录：这门课至今只有完全确定性的 `HeuristicInvestigationAdapter`，没有真实的非确定性 provider 可以演示更有意义的模型抽样评测。
+- `tests/telemetry.test.ts`（5条，含真实 `run_command` + Day20 `envCredentials` 注入验证 redactor 真的能把原始日志里的明文从遥测报告里滤掉,原始 `SessionEvent` 日志本身不受影响）、`tests/audit-log.test.ts`（7条）、`tests/eval-harness.test.ts`（7条，含种子确定性验证：同一个种子两次 `sampleScenario()` 结果完全相等）。
+
+至此 `pnpm test` 共 549 条测试全绿，`pnpm typecheck` 无错误。
