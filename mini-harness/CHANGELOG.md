@@ -346,3 +346,16 @@ LSP 部分走真协议路线（已跟用户确认）：不用进程内 TS Compil
 - `tests/telemetry.test.ts`（5条，含真实 `run_command` + Day20 `envCredentials` 注入验证 redactor 真的能把原始日志里的明文从遥测报告里滤掉,原始 `SessionEvent` 日志本身不受影响）、`tests/audit-log.test.ts`（7条）、`tests/eval-harness.test.ts`（7条，含种子确定性验证：同一个种子两次 `sampleScenario()` 结果完全相等）。
 
 至此 `pnpm test` 共 549 条测试全绿，`pnpm typecheck` 无错误。
+
+## Day29：压力、混沌、安全与上线门禁
+
+不建新子系统——把 Day22-28 建好的整套系统往狠里测。过程中真实找到并修复了一个此前 28 天都没测出来的 bug。
+
+新增/修复：
+- `src/server/http-server.ts`（修复）—— `handleEventsStream()` 原来只有"订阅到一条新的 `turn/end`"这一条收尾路径：如果客户端先 `await` 完 `POST /messages`（turn 已经彻底跑完）再打开 `GET /events`，订阅时已经不会再有新事件，`terminal` 永远发不出去，连接永久挂起。修复：`baseline` 发完之后主动检查"最新一条事件是不是已经是这个 turn 的 `turn/end`"，是的话直接发 `terminal` 收尾，不用等一个不会再发生的未来事件。跟 Day23 `fault-injecting-transport.ts` 那次"已经追上却不发 terminal"的坑是同一类根因，这次是在真服务端第一次暴露出来。新增 `terminalEnvelope()` 辅助函数去掉原来两处重复的 `TurnEndReason` 翻译逻辑。
+- `src/core/audit-log.ts`（修复）—— `AuditingApprovalStore` 的 `sink.record()` 调用原来没有任何保护，`AuditSink` 一抛错就会打断整个审批流程。新增私有 `notify()` 方法把 `sink.record()` 包进 `try/catch`，吞掉 sink 自己的错误——这是根 `README.md` 企业级不变式清单第16条第一次被真正落实成代码。**这条保护特意没有推广到 `Agent`/`session.ts` 的 `SessionSink`**（`agent-handle.ts:121`、`session.ts:305` 仍是裸调用）：实测发现 `SessionSink` 目前完全没有保护时，`send()`/`whenIdle()` 都正常返回、`agent.records` 里这个 turn 完全没被记录、错误变成一次没人认领的 unhandled promise rejection（真实进程会因此崩溃）——比"吞掉丢一条记录"和"干净报错给调用方"都更糟，`SessionSink` 需要的是一个专门设计过的持久化降级策略，不是简单套用同一份 `try/catch`，留给 Day30 `failure-model.md` 展开。
+- `tests/load-and-chaos.test.ts`（新文件，4条）—— 压测（30个真实并发 session 互不串扰；200次工具调用的长 stream 经 Day23 `Conversation` 消费零丢失零缺口）、混沌（多步 turn 中途遇到不可重试的模型错误依然收敛到明确的 `stopReason`；`AuditSink` 抛错不拖垮审批主流程）。
+- `tests/red-team-regression.test.ts`（新增3条，共10条）—— 红队场景6：SSRF（`web_fetch` 不给 `policy` 时能连到内网/loopback 目标——延续 Day18 "policy 默认关闭" 既有立场，不是新发现的 bug；给白名单能真正挡住）；红队场景7：Workflow 脚本即使绕开 `agent()` DSL 函数、手写一个带 `preset` 字段的对象字面量，`WorkflowRunner` 也不会读到这个字段——结构上传不出权限提升，不是靠运行时检查挡住的。
+- `modules/day29-load-chaos-security-gate/release-checklist.md`（新文档）—— 根 `README.md` 18条核心不变式逐条对照 mini-harness 当前真实状态打勾，11条完全通过、7条部分通过（各自边界都写清楚了理由），0条完全未做。
+
+至此 `pnpm test` 共 556 条测试全绿，`pnpm typecheck` 无错误。

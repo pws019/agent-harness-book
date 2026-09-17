@@ -4,6 +4,8 @@
  * 场景"这个维度重新组织一遍,任何一天以后不小心改坏了某个防线,这份测试会先炸。
  * 见 modules/day18-sandbox-and-least-privilege/threat-model.md。
  */
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,9 +13,18 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRunCommandTool } from '../src/tools/bash-tool.js'
 import { AllowlistCommandPolicy, FailClosedCommandPolicy } from '../src/tools/command-policy.js'
 import { createReadOnlyFsTools } from '../src/tools/fs-tools.js'
+import { createWebFetchTool } from '../src/tools/web-fetch-tool.js'
 import { ToolRegistry } from '../src/tools/registry.js'
 import { ToolExecutionError, type ToolExecutionContext } from '../src/tools/types.js'
 import { PathEscapeError } from '../src/tools/workspace.js'
+import { DelegationBudget } from '../src/core/delegation-budget.js'
+import { SubagentManager } from '../src/core/subagent.js'
+import { createReadonlyPreset } from '../src/core/permission-presets.js'
+import { buildWorkflowFromScript, WorkflowRunner } from '../src/core/workflow-runner.js'
+import { LlmAdapter } from '../src/llm/adapter.js'
+import { streamFake } from '../src/llm/fake-adapter.js'
+import type { Message, StreamChunk } from '../src/llm/types.js'
+import type { AgentDeps } from '../src/core/agent-handle.js'
 
 const NODE = process.execPath
 
@@ -30,6 +41,25 @@ function makeWorkspace(): string {
 afterEach(() => {
   while (tmpDirs.length > 0) rmSync(tmpDirs.pop()!, { recursive: true, force: true })
 })
+
+let fixtureServer: Server | undefined
+afterEach(async () => {
+  if (fixtureServer) {
+    await new Promise<void>((resolve) => fixtureServer!.close(() => resolve()))
+    fixtureServer = undefined
+  }
+})
+async function startInternalLookingFixture(): Promise<string> {
+  fixtureServer = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' })
+    res.end('you should not be able to reach this without an explicit allowlist')
+  })
+  await new Promise<void>((resolve) => fixtureServer!.listen(0, resolve))
+  const port = (fixtureServer!.address() as AddressInfo).port
+  // 127.0.0.1 是真实 SSRF 场景最典型的目标形状之一——本地/内网地址，
+  // 不需要伪造任何域名解析。
+  return `http://127.0.0.1:${port}/internal-secret`
+}
 
 describe('红队场景1：prompt injection 要求读取密钥', () => {
   it('run_command 的 env 白名单让宿主进程的 secret 对子进程不可见,即使被诱导去执行"打印所有环境变量"这类命令', async () => {
@@ -155,5 +185,55 @@ describe('fail-closed 是这几条防线共同的兜底原则', () => {
     await expect(registry.execute('run_command', { command: NODE, args: ['-e', '1'] }, ctx())).rejects.toThrow(
       ToolExecutionError,
     )
+  })
+})
+
+describe('红队场景6：SSRF——延续 Day18 "policy 默认关闭" 的既有立场，今天第一次用真实目标场景把它点名', () => {
+  it('web_fetch 不给 policy 时，能连到一个内网/loopback 目标——诚实记录的缺口，不是本轮新发现的 bug', async () => {
+    const internalUrl = await startInternalLookingFixture()
+    const tool = createWebFetchTool() // 没给 policy，跟 run_command 默认不限制是同一个姿态
+    const result = await tool.execute({ url: internalUrl }, ctx())
+    expect(result).toMatchObject({ kind: 'ok', provenance: 'untrusted-external' })
+  })
+
+  it('给了一份不包含这个内网 host 的白名单，SSRF 目标会在真正发起连接之前就被拒绝——这是唯一今天真正提供的、部分的缓解', async () => {
+    const internalUrl = await startInternalLookingFixture()
+    const tool = createWebFetchTool({ policy: new AllowlistCommandPolicy(['api.example.com']) }) // 白名单里没有 127.0.0.1
+    const result = await tool.execute({ url: internalUrl }, ctx())
+    expect(result.kind).toBe('denied')
+  })
+})
+
+describe('红队场景7：Workflow 脚本没有办法声明/提升 preset', () => {
+  function assistantText(text: string): Message {
+    return { role: 'assistant', blocks: [{ type: 'text', text }] }
+  }
+  class InstantAdapter extends LlmAdapter {
+    async *stream(): AsyncIterable<StreamChunk> {
+      yield* streamFake({ message: assistantText('done'), finishReason: { kind: 'stop' } })
+    }
+  }
+  function deps(): Omit<AgentDeps, 'sink'> {
+    return { adapter: new InstantAdapter(), tools: new ToolRegistry(), provider: 'demo', model: 'test' }
+  }
+
+  it('即使脚本绕过 agent() 这个 DSL 函数，直接手写一个带 preset 字段的原始对象字面量，WorkflowRunner 也不会读到它、更不会拿它去做任何权限判断', async () => {
+    // 正常情况下调用 agent('x', 'task') 产出的对象根本没有 preset 这个字段——但脚本
+    // 跑在一段普通的 node:vm 沙箱里，完全有能力绕开 agent() 这个函数，自己手写一个
+    // 形状差不多、但多塞了一个 preset 字段的对象字面量，企图"伪装"成一次高权限委派。
+    const tree = buildWorkflowFromScript(`({ kind: 'agent', agentId: 'worker', task: 'do something', preset: 'autonomous' })`)
+    expect(tree).toMatchObject({ kind: 'agent', agentId: 'worker' })
+
+    // 父 SubagentManager 的 parentPreset 是最严格的 readonly——如果 WorkflowRunner
+    // 真的把上面那个偷塞进去的 preset 字段转发给了 SubagentManager.startChild()，
+    // 这里会直接抛 SubagentPermissionEscalationError。它没有抛，因为
+    // WorkflowRunner.interpret() 的 'agent' 分支从来没有读过 node 上除了
+    // agentId/task 之外的任何字段（workflow-runner.ts 的 startChild() 调用点
+    // 里没有 preset: ... 这一项）。
+    const manager = new SubagentManager(new DelegationBudget({ maxConcurrent: 5, maxTotalChildren: 5, maxDepth: 5 }), 0, createReadonlyPreset(new Set()))
+    const runner = new WorkflowRunner(manager, new Map([['worker', deps()]]))
+
+    const state = await runner.run(tree, { maxAgents: 5 })
+    expect(state.kind).toBe('completed')
   })
 })

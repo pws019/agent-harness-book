@@ -6,7 +6,8 @@ import type { Message } from '../llm/types.js'
 import { createBacklogWriter } from './backlog-writer.js'
 import { IdempotencyStore } from './idempotency-store.js'
 import { SessionNotFoundError, SessionRegistry } from './session-registry.js'
-import { encodeEnvelope } from './wire-protocol.js'
+import { encodeEnvelope, type StreamEnvelope } from './wire-protocol.js'
+import type { TurnEndReason } from '../core/session.js'
 
 const DEFAULT_MAX_BACKLOG_BYTES = 64 * 1024
 
@@ -53,6 +54,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 function textToMessage(text: string): Message {
   return { role: 'user', blocks: [{ type: 'text', text }] }
+}
+
+/** `TurnEndReason` 比 `StreamEnvelope.terminal.reason` 多一种情况（`budget_exhausted`）——
+ * 线协议只区分"正常完成/取消/出错"三种，预算耗尽对客户端来说就是一种出错。 */
+function terminalEnvelope(reason: TurnEndReason, lastSeq: number): StreamEnvelope {
+  return { kind: 'terminal', reason: reason.kind === 'budget_exhausted' ? 'error' : reason.kind, lastSeq }
 }
 
 /**
@@ -196,13 +203,31 @@ export function createHttpServer(options: HttpServerOptions): Server {
       if (event.type === 'turn/end') {
         closed = true
         unsubscribe()
-        write({ kind: 'terminal', reason: event.reason.kind === 'budget_exhausted' ? 'error' : event.reason.kind, lastSeq: event.seq })
+        write(terminalEnvelope(event.reason, event.seq))
         res.end()
       }
     })
 
     const snapshot = agent.sessionEvents.filter((event) => event.seq > since)
     write({ kind: 'baseline', snapshot })
+
+    // 真实踩到的坑（Day29 负载测试发现）：如果客户端先 `POST /messages` 等它彻底跑完
+    // 再打开这条流（而不是 study.md §2.0 建议的"先开流再发消息"），这次连接订阅的时候
+    // 这个 turn 早就结束了——不会再有任何新事件触发上面那个 `subscribe()` 回调，
+    // `terminal` 永远不会被发出去，`res.end()` 永远不会被调用，客户端会挂在这条
+    // 连接上等到天荒地老。修复：baseline 发完之后，主动检查"最新一条事件是不是已经是
+    // 这个 turn 的 `turn/end`"——是的话说明这次连接从一开始就已经追上了，直接把
+    // terminal 发出去、正常收尾，不用等一个永远不会再来的新事件。跟 Day23
+    // `fault-injecting-transport.ts` 那个"客户端本来就已经追上，这次重连没有新内容
+    // 要发也该发 terminal"的坑是同一类问题,只是这次是在真服务端而不是测试专用的
+    // 故障注入器里发现的。
+    const lastEvent = agent.sessionEvents.at(-1)
+    if (!closed && lastEvent?.type === 'turn/end' && lastEvent.seq > since) {
+      closed = true
+      unsubscribe()
+      write(terminalEnvelope(lastEvent.reason, lastEvent.seq))
+      res.end()
+    }
 
     req.on('close', () => {
       closed = true

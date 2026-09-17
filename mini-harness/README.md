@@ -13,7 +13,7 @@ pnpm typecheck    # 类型检查
 
 ## 如何对照每天的进度
 
-每天的学习里程碑都会打一个 git tag（`day01` ~ `day28`）。如果你写练习时卡住了，想看"官方参考实现长什么样"，可以：
+每天的学习里程碑都会打一个 git tag（`day01` ~ `day29`）。如果你写练习时卡住了，想看"官方参考实现长什么样"，可以：
 
 ```bash
 git log --oneline --all --tags   # 看看有哪些里程碑
@@ -32,6 +32,6 @@ git checkout day04 -- mini-harness/src   # 只取出 Day4 结束时的代码状�
 - `src/server/` —— 把 `Agent` 接进真实 `node:http` 服务器：流式协议 `StreamEnvelope`、幂等 `IdempotencyStore`、慢客户端积压上限 `createBacklogWriter`、session 生命周期 `SessionRegistry`（Day22 引入）
 - `src/client/` —— 断线重连客户端：合并去重 `Conversation`、重连循环 `ReconnectingStream`、故障注入测试工具、终端客户端（Day23 引入）
 - `cli.ts` 的 `run-workflow` 子命令 —— 里程碑四：把 Day22-26 各自独立建好的每一块串成一条能跑的编排命令（Day27 引入）
-- `tests/` —— 单元测试、场景测试、故障注入测试
+- `tests/` —— 单元测试、场景测试、故障注入测试、压力/混沌/红队测试（`load-and-chaos.test.ts`、`red-team-regression.test.ts`，Day29 扩充）
 
 详细记录见 [CHANGELOG.md](./CHANGELOG.md)。
