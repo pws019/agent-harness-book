@@ -103,6 +103,7 @@ function scheduleReminder(agent: Agent, message: Message, delayMs: number): Remi
 
 | 问自己 | 是 → | 举例（本项目里真实存在的类型/代码） |
 |---|---|---|
+| 这段内容每一轮都必须让模型看到、不受篇幅预算限制、不需要判断"这轮用不用得上"？ | 直接写进 Prompt（不经过匹配/预算这道门） | `SystemPromptSections.tools`（Day11，工具列表必须全量展示，少一个都不行，见第2节） |
 | 这段内容只是"告诉模型怎么做某件事"，模型自己决定要不要用？ | Skill | `SkillDefinition.body`（第2节） |
 | 这个动作必须经过参数校验、超时、取消这套统一管线，模型要能在一次工具调用里选中它？ | Tool | `ToolDefinition`（Day4 `ToolRegistry`） |
 | 这个动作只由人（或人写的脚本）直接触发，模型永远看不到它？ | Command | `Command`（第3节，`createProposeEditCommand()`） |
